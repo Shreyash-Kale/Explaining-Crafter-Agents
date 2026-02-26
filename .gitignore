@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.venv/
+venv/
+
+# Local environment
+crafter_env/
+.python-version
+
+# OS
+.DS_Store
+
+# Editor
+.vscode/
+
+# Logs and outputs
+logs/
+results/
+saved_checkpoints/
+training_logs/
+videos/
+MIXTAPE_Results/
+archive/
+results.zip
+stats.jsonl
+
+# Media and data artifacts
+*.mp4
+*.npz
+*.html
+
+# Optional: CSV logs (generated)
+*.csv
