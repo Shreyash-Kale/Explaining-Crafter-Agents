@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import QStackedWidget, QPushButton
 from PyQt5.QtWidgets import QCheckBox
 
 from .video_player import VideoPlayerWidget
-from .widgets import VisualizationWidget, InfoPanel
+from .widgets import VisualizationWidget, InfoPanel, ExplanationPanel
 from .data_manager import DataManager
 from .timeline import TimelineController
 from .config import DEFAULT_LOG_DIR, RESULTS_LOG_DIR, VIZ_COLORS, DEFAULT_FPS
@@ -75,6 +75,7 @@ class MainWindow(QMainWindow):
         self.visualization = VisualizationWidget(self.data_manager)  # plots
         self.info_panel = InfoPanel()
         self.info_panel.data_manager = self.data_manager
+        self.explanation_panel = ExplanationPanel(self.data_manager)
 
         self.right_widget.addWidget(self.visualization)  # index 0
         self.right_widget.addWidget(self.info_panel)     # index 1
@@ -172,14 +173,11 @@ class MainWindow(QMainWindow):
     def toggle_view(self):
         if self.showing_info_panel:
             self.right_widget.setCurrentIndex(0)  # Show plots
-            if hasattr(self.visualization, 'decision_plot'):
-                self.visualization.decision_plot.setVisible(True)
             self.showing_info_panel = False
         else:
             self.right_widget.setCurrentIndex(1)  # Show info panel
-            if hasattr(self.visualization, 'decision_plot'):
-                self.visualization.decision_plot.setVisible(False)
             self.showing_info_panel = True
+        self._mount_bottom_panel()
         self.update_toggle_button_label()
 
     def update_toggle_button_label(self):
@@ -237,20 +235,6 @@ class MainWindow(QMainWindow):
 
         # Load the selected files
         self.load_data(csv_path, video_path)
-
-    def on_timeline_position_changed(self, position):
-        """Handle timeline position changes (0-100%)"""
-        # Update video position
-        self.video_player.seek_percent(position)
-        
-        # Calculate corresponding step for visualization
-        frame = self.video_player.current_frame
-        step = self.timeline.frame_to_step(frame)
-        
-        # Update visualization position without triggering back-propagation
-        self.visualization.update_position(step, from_timeline=True)
-
-        self.info_panel.update_state(step)
 
     def setup_menu(self):
         """Create the application menu bar with actions"""
@@ -520,7 +504,7 @@ class MainWindow(QMainWindow):
 
         # Build / refresh the decision-attribution comparison plot
         self.visualization.rebuild_decision_plot()
-        self._mount_decision_plot()
+        self._mount_bottom_panel()
 
         
         # Pass video to player
@@ -531,21 +515,32 @@ class MainWindow(QMainWindow):
         total_steps = len(self.data_manager.time_steps)
         total_frames = self.video_player.total_frames
         self.timeline.setup(total_steps, total_frames)
+
+        # Prime right-side achievements and bottom explanation at episode start.
+        self.info_panel.update_state(0)
+        self.explanation_panel.update_step(0)
         
         # Update window title
         self.setWindowTitle(f"Crafter Analysis - {os.path.basename(log_file)}")
 
-    def _mount_decision_plot(self):
-        """Place decision attribution plot in the full-width bottom container."""
+    def _mount_bottom_panel(self):
+        """Show decision plot in Charts mode or explanation toolbox in Achievements mode."""
         while self.decision_layout.count():
             item = self.decision_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.setParent(None)
 
+        if self.showing_info_panel:
+            self.decision_layout.addWidget(self.explanation_panel)
+            self.explanation_panel.setVisible(True)
+            if hasattr(self.visualization, 'decision_plot'):
+                self.visualization.decision_plot.setVisible(False)
+            return
+
         if hasattr(self.visualization, 'decision_plot'):
             self.decision_layout.addWidget(self.visualization.decision_plot)
-            self.visualization.decision_plot.setVisible(not self.showing_info_panel)
+            self.visualization.decision_plot.setVisible(True)
     
     def on_timeline_position_changed(self, position):
         """Handle timeline position changes (0-100%)"""
@@ -559,6 +554,9 @@ class MainWindow(QMainWindow):
         
         # Update visualization position without triggering back-propagation
         self.visualization.update_position(step, from_timeline=True)
+
+        self.info_panel.update_state(step)
+        self.explanation_panel.update_step(step)
     
         # Define an offset for synchronization 
         self.frame_offset = 1
@@ -582,7 +580,8 @@ class MainWindow(QMainWindow):
         # Update visualization position
         self.visualization.update_position(step, from_video=True)
 
-        self.info_panel.update_state(step) 
+        self.info_panel.update_state(step)
+        self.explanation_panel.update_step(step)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

@@ -10,6 +10,7 @@ from PyQt5.QtCore import Qt, pyqtSlot, QRectF, QEvent
 from PyQt5.QtGui import QColor, QPainter, QFont, QBrush, QPicture, QIcon, QCursor
 import pyqtgraph as pg
 from PyQt5.QtGui import QColor
+from .explainer import generate_explanation
 
 
 class InfoPanel(QFrame):
@@ -322,6 +323,92 @@ class InfoPanel(QFrame):
                         item.setText(f"◯ {name} (Needs: {deps_text})")
                         item.setBackground(QBrush(QColor('#ffffff')))  # White
                         item.setForeground(QBrush(QColor('#666666')))  # Gray text
+
+
+class ExplanationPanel(QFrame):
+    """Bottom toolbox that narrates agent decisions in natural language."""
+
+    def __init__(self, data_manager=None, parent=None):
+        super().__init__(parent)
+        self.data_manager = data_manager
+        self.current_step = 0
+        self.algorithm = "unknown"
+
+        self.setFrameShape(QFrame.StyledPanel)
+        self.setStyleSheet(
+            "QFrame { background-color: #ffffff; border: 1px solid #d7d7d7; border-radius: 6px; }"
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(6)
+
+        self.title_label = QLabel("Explanation Toolbox")
+        self.title_label.setStyleSheet("font-size: 14px; font-weight: 600; color: #1f1f1f;")
+        layout.addWidget(self.title_label)
+
+        self.meta_label = QLabel("Waiting for trajectory data...")
+        self.meta_label.setStyleSheet("font-size: 11px; color: #5a5a5a;")
+        layout.addWidget(self.meta_label)
+
+        self.explanation_label = QLabel(
+            "Load a trajectory and scrub the timeline to see per-step explanations."
+        )
+        self.explanation_label.setWordWrap(True)
+        self.explanation_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.explanation_label.setStyleSheet(
+            "font-size: 12px; color: #222; line-height: 1.35; "
+            "background-color: #fafafa; border: 1px solid #ececec; border-radius: 4px; padding: 8px;"
+        )
+        layout.addWidget(self.explanation_label, 1)
+
+    def set_data_manager(self, data_manager):
+        self.data_manager = data_manager
+        self.update_step(0)
+
+    def set_algorithm(self, algorithm):
+        self.algorithm = (algorithm or "unknown").lower()
+        self.update_step(self.current_step)
+
+    def update_step(self, step):
+        """Refresh explanation text using current and previous timestep rows."""
+        self.current_step = max(0, int(step)) if step is not None else 0
+        if self.data_manager is None or self.data_manager.event_df is None:
+            return
+
+        max_idx = len(self.data_manager.event_df) - 1
+        if max_idx < 0:
+            return
+
+        idx = min(self.current_step, max_idx)
+        curr = self.data_manager.get_step_details(idx)
+        prev = self.data_manager.get_step_details(max(0, idx - 1))
+        if not curr:
+            return
+
+        if self.algorithm in ("unknown", ""):
+            if 'world_model_score' in curr and 'exploration_bonus' in curr:
+                algo = 'dreamer'
+            elif 'entropy' in curr and 'advantage' in curr:
+                algo = 'ppo'
+            else:
+                algo = 'unknown'
+        else:
+            algo = self.algorithm
+
+        step_achievements = self.data_manager.get_step_achievements(idx)
+        if step_achievements:
+            curr = dict(curr)
+            curr['achievement_unlocked'] = step_achievements[0]
+
+        text = generate_explanation(curr, prev_row=prev, algorithm=algo)
+        action_name = self.data_manager.get_action_name(curr.get('action'))
+        reward = curr.get('reward', 0.0)
+
+        self.meta_label.setText(
+            f"Step {idx} | Action: {action_name} | Reward: {float(reward):.3f} | Algorithm: {algo.upper()}"
+        )
+        self.explanation_label.setText(text)
 
 
 class CustomBarGraphItem(pg.GraphicsObject):
