@@ -2,6 +2,11 @@
 
 This guide thoroughly explains the project: what it does, how it’s built, how to run it end-to-end, and how to analyze sequential decision-making using the visualization interface. It is intended for practitioners who want a deep understanding of the system and how to extend it.
 
+Scope note:
+
+- `README.md` is the quickstart and day-to-day entry point.
+- This document is the deep technical reference.
+
 ---
 
 ## 1. Overview
@@ -28,7 +33,8 @@ The platform helps answer questions like: Which actions led to rewards? What did
   - Data loader/normalizer: [vis/data_manager.py](vis/data_manager.py)
   - Timeline synchronization: [vis/timeline.py](vis/timeline.py)
   - Video player controls: [vis/video_player.py](vis/video_player.py)
-- Semantic event templates: [SemanticEventDetector.py](SemanticEventDetector.py)
+  - Template explainer module: [vis/explainer.py](vis/explainer.py)
+- Semantic event templates (optional, currently not wired): [SemanticEventDetector.py](SemanticEventDetector.py)
 - Visualization config/paths: [vis/config.py](vis/config.py)
 - Dependencies: [requirements.txt](requirements.txt)
 
@@ -92,15 +98,25 @@ Notes:
 - Main app (`vis/main.py`) composes:
   - Left: `VideoPlayerWidget` (OpenCV-backed frame display + play/step controls).
   - Right: `VisualizationWidget` (pyqtgraph plots) or `InfoPanel` (achievements view) via a stacked widget.
+  - Bottom: mode-aware panel:
+    - charts mode: decision attribution plot
+    - achievements mode: Explanation Toolbox (`ExplanationPanel`) with step-level NLP templates
   - Decision signals: `action_probability`, `value`/`value_estimate`, `entropy`, `advantage`, `exploration_bonus`, `world_model_score`
   - Normalized traces for overlays (0–1 scaling, guarded against degenerate ranges)
 - Plots in `vis/widgets.py`:
   - Cumulative reward line + per-step bar graph; `DecisionPoint` markers with action-aware tooltips; vertical cursor.
   - Reward component stacked areas/lines for non-zero series; dynamic legend.
-  - Decision attribution overlay: always `value` + `action_probability`; plus PPO (`entropy`, `advantage`) or Dreamer (`exploration_bonus`, `world_model_score`) when available.
+  - Decision attribution overlay: always `value` + `action_probability`; plus PPO (`entropy`, `advantage`) or DreamerV2 (`exploration_bonus`, `world_model_score`) when available.
 - Synchronization:
   - Slider percent → video frame → episode step using `frame_step_ratio` mapping.
-  - Video `frame_changed` events update slider and plots; plots update `InfoPanel` to reflect achievements at current step.
+  - Video `frame_changed` events update slider and plots; the app updates both `InfoPanel` and `ExplanationPanel` at the current step.
+
+### 4.6 Template Explanation Toolbox (vis/explainer.py + vis/widgets.py)
+
+- `vis/explainer.py` provides deterministic template generation via `generate_explanation(...)`.
+- Input: current step row, previous step row, and algorithm mode (`dreamer` / `ppo` / `unknown`).
+- Output: concise natural language text describing confidence, value trend, and algorithm-specific signals.
+- `ExplanationPanel` is rendered in the bottom pane during Achievements mode and stays synchronized with timeline/video scrubbing.
 
 ---
 
@@ -112,7 +128,7 @@ Notes:
 - Optional (used when present):
   - `executed_action`, `action_probability`, `value` or `value_estimate`
   - PPO: `entropy`, `advantage`
-  - Dreamer: `exploration_bonus`, `world_model_score`
+  - DreamerV2: `exploration_bonus`, `world_model_score`
   - `inventory` as a Python-style dict string, e.g., `{"wood": 3, "stone": 1}`
 
 `VisDataManager` expands inventory keys into component time series. Zero-only components are hidden from the plot.
@@ -132,6 +148,8 @@ Notes:
 ---
 
 ## 6. Running the System
+
+For minimal setup/run commands, prefer `README.md` first; this section keeps the full workflow examples.
 
 ### 6.1 Setup environment
 
@@ -178,8 +196,11 @@ In the app:
 
 - File → Open Random Log and Video (looks in `logs/`)
 - File → Open from Results (navigates `results/dreamer_v2/...`)
-- Use the bottom slider or video controls; plots and achievements update in sync.
-- View menu toggles cumulative, components, and decision attribution; Toggle Info/Plots switches the right pane.
+- Use the bottom slider or video controls; charts, achievements, and explanation text update in sync.
+- Toggle button behavior:
+  - `Show Achievements`: right pane shows achievements; bottom pane shows Explanation Toolbox.
+  - `Show Charts`: right pane shows charts; bottom pane shows decision attribution plot.
+- View menu toggles cumulative, components, and decision attribution visibility.
 
 ---
 
@@ -189,7 +210,8 @@ In the app:
 2. Glance at the decision attribution overlay: were value and action probability high? Was entropy/exploration elevated beforehand? This explains confidence and exploration behavior.
 3. Inspect reward components: which resource signals changed? Inventory-derived lines show resource collection/crafting effects.
 4. Switch to the Info panel: see achievements unlocked near the current step and dependencies required for missing ones.
-5. Move frame-by-frame to study short sequences around pivotal decisions; correlate video context with attribution signals.
+5. Use the Explanation Toolbox while in Achievements mode to read a textual summary for the current step.
+6. Move frame-by-frame to study short sequences around pivotal decisions; correlate video context with attribution signals and template narration.
 
 This workflow reveals credit assignment patterns, exploration efficacy, and prerequisite milestones for complex behaviors.
 
@@ -229,21 +251,35 @@ Tips:
 - Empty components: likely zero-only series; check `inventory` column content in CSV.
 - Slow playback: lower video resolution or limit frame rate; the player scales frames to the widget size.
 - Checkpoint not found: verify path naming (`ckpt_<STEPS>/ckpt-<N>`). `DreamerPolicy` prints loaded step.
+- Import error on launch: run `python -m vis.main` from project root (not `python vis/main.py`).
 
 ---
 
 ## 11. FAQ
 
 - Can I visualize PPO logs? Yes—if your CSV includes `entropy`/`advantage`, the decision attribution plot will show PPO overlays.
+- Can I generate natural language explanations? Yes—`vis/explainer.py` powers the Explanation Toolbox shown in Achievements mode.
 - Can I extend event detection? Use [SemanticEventDetector.py](SemanticEventDetector.py) and wire events into `vis/widgets.py` (icons or bands) keyed to `time_step`.
 - Do I need videos? The viz works best with video; without it, you can still scrub plots via the slider.
+
+---
+
+## Appendix: Recent Cleanup Notes
+
+Removed legacy standalone scripts that were not in the core runtime/import path:
+
+- `MIXTAPE_Save.py`
+- `test_data_loading.py`
+- `debug_decision_data.py`
+- `analyze_rewards.py`
+- duplicate root `VisConfig.py` (active config is `vis/config.py`)
 
 ---
 
 ## 12. Roadmap and Extensions
 
 - Add TD-error, advantage, and logits to tooltips for deeper diagnostics.
-- Record imagined trajectories (Dreamer) and overlay as predicted outcome bands.
+- Record imagined trajectories (DreamerV2) and overlay as predicted outcome bands.
 - Bookmark/tag key steps in the UI and export a review set.
 - Batch import of episodes with a comparison dashboard (per-checkpoint).
 
@@ -258,6 +294,8 @@ Tips:
 ---
 
 ## 14. Quick Commands
+
+These commands mirror `README.md` and are repeated here for convenience.
 
 Setup:
 
