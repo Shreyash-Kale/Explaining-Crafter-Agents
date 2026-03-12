@@ -3,7 +3,7 @@
 import sys
 import os
 from PyQt5.QtWidgets import QApplication, QMainWindow, QFileDialog, QSplitter, QVBoxLayout, QWidget
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer, QFileSystemWatcher
 from PyQt5.QtWidgets import QStackedWidget, QPushButton
 from PyQt5.QtWidgets import QCheckBox
 
@@ -30,16 +30,28 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(6, 6, 6, 6)
+        main_layout.setSpacing(6)
 
         self.showing_info_panel = False  # Track current view
 
         
-        # Create a splitter to divide the window into two panels
-        splitter = QSplitter(Qt.Horizontal)
-        main_layout.addWidget(splitter)
+        # Vertical split: top (video + right panel) and bottom (full-width decision plot).
+        self.vertical_splitter = QSplitter(Qt.Vertical)
+        main_layout.addWidget(self.vertical_splitter)
 
-        self.toggle_button = QPushButton("Toggle Info/Plots")
-        main_layout.addWidget(self.toggle_button)
+        # Top area split: video on left, stacked plots/info on right.
+        self.top_splitter = QSplitter(Qt.Horizontal)
+        self.vertical_splitter.addWidget(self.top_splitter)
+
+        self.toggle_button = QPushButton()
+        self.toggle_button.setFixedHeight(32)
+        self.toggle_button.setMinimumWidth(150)
+        self.toggle_button.setStyleSheet(
+            "QPushButton { background-color: #f7f7f7; border: 1px solid #9a9a9a; border-radius: 6px; padding: 0 12px; }"
+            "QPushButton:hover { background-color: #ffffff; border-color: #6f6f6f; }"
+            "QPushButton:pressed { background-color: #e8e8e8; }"
+        )
 
         self.toggle_button.clicked.connect(self.toggle_view)
 
@@ -51,12 +63,14 @@ class MainWindow(QMainWindow):
         
         # Create video player widget (left panel)
         self.video_player = VideoPlayerWidget()
-        splitter.addWidget(self.video_player)
+        self.top_splitter.addWidget(self.video_player)
+        self.video_player.add_info_widget(self.toggle_button)
+        self.update_toggle_button_label()
         
         # Create visualization widget (right panel)
         # Right side: Stacked widget
         self.right_widget = QStackedWidget()
-        splitter.addWidget(self.right_widget)
+        self.top_splitter.addWidget(self.right_widget)
 
         self.visualization = VisualizationWidget(self.data_manager)  # plots
         self.info_panel = InfoPanel()
@@ -66,21 +80,33 @@ class MainWindow(QMainWindow):
         self.right_widget.addWidget(self.info_panel)     # index 1
 
         self.right_widget.setCurrentIndex(0)
+
+        # Bottom full-width row for decision attribution plot.
+        self.decision_container = QWidget()
+        self.decision_layout = QVBoxLayout(self.decision_container)
+        self.decision_layout.setContentsMargins(0, 0, 0, 0)
+        self.decision_layout.setSpacing(0)
+        self.vertical_splitter.addWidget(self.decision_container)
         
         # self.visualization.data_manager = self.data_manager
         
 
         # Create timeline controller at bottom
         self.timeline = TimelineController()
-        main_layout.addWidget(self.timeline)
+        self.video_player.add_bottom_widget(self.timeline)
         
-        # Set initial splitter sizes (50% each)
-        splitter.setSizes([600, 600])
+        # Set initial splitter sizes — video panel is kept compact so graphs
+        # get the most horizontal space.
+        self.top_splitter.setSizes([360, 840])
+        self.vertical_splitter.setSizes([590, 210])
         
         # Connect signals between components
         self.timeline.position_changed.connect(self.on_timeline_position_changed)
         self.timeline.position_changed.connect(self.visualization.update_decision_marker)
         self.video_player.frame_changed.connect(self.on_video_frame_changed)
+
+        # Dev productivity: auto-reload app when vis source files are saved.
+        self.setup_auto_reload()
 
         # Setup menu actions
         self.setup_menu()
@@ -89,13 +115,79 @@ class MainWindow(QMainWindow):
         # self.load_latest_data()
         self.open_random_files()
 
+    def setup_auto_reload(self):
+        """Watch vis/*.py and restart process automatically after file saves."""
+        self.auto_reload_enabled = True
+        self._restarting = False
+
+        self._reload_timer = QTimer(self)
+        self._reload_timer.setSingleShot(True)
+        self._reload_timer.setInterval(250)
+        self._reload_timer.timeout.connect(self.restart_process)
+
+        self._watcher = QFileSystemWatcher(self)
+        self.vis_dir = os.path.dirname(__file__)
+        self.refresh_watched_files()
+        self._watcher.addPath(self.vis_dir)
+        self._watcher.fileChanged.connect(self.on_source_changed)
+        self._watcher.directoryChanged.connect(self.on_source_dir_changed)
+
+    def refresh_watched_files(self):
+        """Keep watcher list synced with current vis python files."""
+        desired = {
+            os.path.join(self.vis_dir, name)
+            for name in os.listdir(self.vis_dir)
+            if name.endswith('.py') and os.path.isfile(os.path.join(self.vis_dir, name))
+        }
+        current = set(self._watcher.files())
+        to_add = sorted(desired - current)
+        to_remove = sorted(current - desired)
+        if to_add:
+            self._watcher.addPaths(to_add)
+        if to_remove:
+            self._watcher.removePaths(to_remove)
+
+    def on_source_changed(self, path):
+        if not self.auto_reload_enabled:
+            return
+        # QFileSystemWatcher can drop changed files; add it back.
+        if os.path.exists(path) and path not in self._watcher.files():
+            self._watcher.addPath(path)
+        self._reload_timer.start()
+
+    def on_source_dir_changed(self, _path):
+        if not self.auto_reload_enabled:
+            return
+        self.refresh_watched_files()
+        self._reload_timer.start()
+
+    def restart_process(self):
+        """Hot-restart the GUI process to reflect code changes without manual relaunch."""
+        if self._restarting:
+            return
+        self._restarting = True
+        python_exec = sys.executable
+        os.execv(python_exec, [python_exec] + sys.argv)
+
     def toggle_view(self):
         if self.showing_info_panel:
             self.right_widget.setCurrentIndex(0)  # Show plots
+            if hasattr(self.visualization, 'decision_plot'):
+                self.visualization.decision_plot.setVisible(True)
             self.showing_info_panel = False
         else:
             self.right_widget.setCurrentIndex(1)  # Show info panel
+            if hasattr(self.visualization, 'decision_plot'):
+                self.visualization.decision_plot.setVisible(False)
             self.showing_info_panel = True
+        self.update_toggle_button_label()
+
+    def update_toggle_button_label(self):
+        """Keep the footer toggle label descriptive of the next action."""
+        if self.showing_info_panel:
+            self.toggle_button.setText("Show Charts")
+        else:
+            self.toggle_button.setText("Show Achievements")
 
 
 
@@ -208,6 +300,11 @@ class MainWindow(QMainWindow):
         show_decision.setCheckable(True)
         show_decision.setChecked(True)
         show_decision.triggered.connect(lambda checked: self.visualization.toggle_view('decision', checked))
+
+        auto_reload = view_menu.addAction('Auto Reload (Dev)')
+        auto_reload.setCheckable(True)
+        auto_reload.setChecked(True)
+        auto_reload.triggered.connect(lambda checked: setattr(self, 'auto_reload_enabled', checked))
 
 
 
@@ -423,6 +520,7 @@ class MainWindow(QMainWindow):
 
         # Build / refresh the decision-attribution comparison plot
         self.visualization.rebuild_decision_plot()
+        self._mount_decision_plot()
 
         
         # Pass video to player
@@ -436,6 +534,18 @@ class MainWindow(QMainWindow):
         
         # Update window title
         self.setWindowTitle(f"Crafter Analysis - {os.path.basename(log_file)}")
+
+    def _mount_decision_plot(self):
+        """Place decision attribution plot in the full-width bottom container."""
+        while self.decision_layout.count():
+            item = self.decision_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+
+        if hasattr(self.visualization, 'decision_plot'):
+            self.decision_layout.addWidget(self.visualization.decision_plot)
+            self.visualization.decision_plot.setVisible(not self.showing_info_panel)
     
     def on_timeline_position_changed(self, position):
         """Handle timeline position changes (0-100%)"""

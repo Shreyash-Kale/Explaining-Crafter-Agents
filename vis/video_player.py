@@ -2,8 +2,9 @@
 
 import cv2
 import numpy as np
-from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QLabel, QSlider, 
-                           QHBoxLayout, QPushButton, QStyle, QSizePolicy)
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QLabel, QSlider,
+                           QHBoxLayout, QPushButton, QStyle, QSizePolicy,
+                           QToolButton, QMenu, QAction, QActionGroup)
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QSize
 
@@ -24,6 +25,7 @@ class VideoPlayerWidget(QWidget):
         self.current_frame = 0
         self.total_frames = 0
         self.fps = 30
+        self.playback_speed = 1.0
         self.playing = False
         
         # Setup timer for playback
@@ -35,44 +37,124 @@ class VideoPlayerWidget(QWidget):
     
     def init_ui(self):
         """Initialize user interface components"""
+
+        control_height = 36
+        icon_button_width = 48
+        control_button_style = (
+            "QPushButton { background-color: #f7f7f7; border: 1px solid #9a9a9a; border-radius: 6px; }"
+            "QPushButton:hover { background-color: #ffffff; border-color: #6f6f6f; }"
+            "QPushButton:pressed { background-color: #e8e8e8; }"
+        )
         
         # Main layout
-        layout = QVBoxLayout(self)
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(4, 4, 4, 4)
+        self.main_layout.setSpacing(4)
         
         # Create video display label
         self.video_label = QLabel("No video loaded")
         self.video_label.setAlignment(Qt.AlignCenter)
         self.video_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.video_label.setStyleSheet("background-color: black; color: white;")
-        layout.addWidget(self.video_label)
+        self.main_layout.addWidget(self.video_label)
         
-        # Create controls layout
-        controls_layout = QHBoxLayout()
-        
-        # Play/pause button
-        self.play_button = QPushButton()
-        self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
-        self.play_button.clicked.connect(self.toggle_play)
-        controls_layout.addWidget(self.play_button)
+        # Single aligned footer row with separate left/right groups so macOS
+        # native control metrics do not drift visually.
+        self.footer_row = QHBoxLayout()
+        self.footer_row.setContentsMargins(0, 0, 0, 0)
+        self.footer_row.setSpacing(8)
+
+        self.controls_widget = QWidget()
+        self.controls_widget.setFixedHeight(control_height)
+        self.controls_row = QHBoxLayout(self.controls_widget)
+        self.controls_row.setContentsMargins(0, 0, 0, 0)
+        self.controls_row.setSpacing(6)
+
+        self.status_widget = QWidget()
+        self.status_widget.setFixedHeight(control_height)
+        self.status_row = QHBoxLayout(self.status_widget)
+        self.status_row.setContentsMargins(0, 0, 0, 0)
+        self.status_row.setSpacing(8)
         
         # Step backward button
         self.back_button = QPushButton()
         self.back_button.setIcon(self.style().standardIcon(QStyle.SP_MediaSkipBackward))
+        self.back_button.setFixedSize(icon_button_width, control_height)
+        self.back_button.setStyleSheet(control_button_style)
         self.back_button.clicked.connect(lambda: self.seek_relative(-1))
-        controls_layout.addWidget(self.back_button)
+        self.controls_row.addWidget(self.back_button, 0, Qt.AlignVCenter)
+
+        # Play/pause button
+        self.play_button = QPushButton()
+        self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self.play_button.setFixedSize(icon_button_width, control_height)
+        self.play_button.setStyleSheet(control_button_style)
+        self.play_button.clicked.connect(self.toggle_play)
+        self.controls_row.addWidget(self.play_button, 0, Qt.AlignVCenter)
         
         # Step forward button
         self.forward_button = QPushButton()
         self.forward_button.setIcon(self.style().standardIcon(QStyle.SP_MediaSkipForward))
+        self.forward_button.setFixedSize(icon_button_width, control_height)
+        self.forward_button.setStyleSheet(control_button_style)
         self.forward_button.clicked.connect(lambda: self.seek_relative(1))
-        controls_layout.addWidget(self.forward_button)
-        
-        # Add controls to main layout
-        layout.addLayout(controls_layout)
-        
-        # Add info label for frame details
+        self.controls_row.addWidget(self.forward_button, 0, Qt.AlignVCenter)
+
+        # Playback speed menu button (cleaner macOS-style than a plain dropdown).
+        self.speed_button = QToolButton()
+        self.speed_button.setFixedSize(82, control_height)
+        self.speed_button.setText("1x")
+        self.speed_button.setPopupMode(QToolButton.InstantPopup)
+        self.speed_button.setStyleSheet(
+            "QToolButton { background-color: #f7f7f7; border: 1px solid #9a9a9a; border-radius: 6px; padding: 0 8px; font-size: 12px; }"
+            "QToolButton:hover { background-color: #ffffff; border-color: #6f6f6f; }"
+            "QToolButton::menu-indicator { image: none; width: 0; }"
+        )
+
+        self.speed_menu = QMenu(self.speed_button)
+        self.speed_group = QActionGroup(self)
+        self.speed_group.setExclusive(True)
+        self.speed_actions = {}
+        for speed_text in ["1x", "2x", "3x", "5x"]:
+            action = QAction(speed_text, self)
+            action.setCheckable(True)
+            action.triggered.connect(lambda checked, s=speed_text: self.set_playback_speed(s))
+            self.speed_menu.addAction(action)
+            self.speed_group.addAction(action)
+            self.speed_actions[speed_text] = action
+        self.speed_button.setMenu(self.speed_menu)
+        self.controls_row.addWidget(self.speed_button, 0, Qt.AlignVCenter)
+
+        # Restart button: jump back to frame 0 without auto-playing.
+        self.restart_button = QPushButton()
+        self.restart_button.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
+        self.restart_button.setFixedSize(icon_button_width, control_height)
+        self.restart_button.setStyleSheet(control_button_style)
+        self.restart_button.clicked.connect(self.restart_to_start)
+        self.controls_row.addWidget(self.restart_button, 0, Qt.AlignVCenter)
+
         self.info_label = QLabel("Frame: 0 / 0")
-        layout.addWidget(self.info_label)
+        self.info_label.setFixedHeight(control_height)
+        self.info_label.setMinimumWidth(110)
+        self.info_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        self.info_label.setStyleSheet("font-size: 12px; padding: 0; margin: 0;")
+        self.status_row.addWidget(self.info_label, 0, Qt.AlignVCenter)
+
+        self.footer_row.addWidget(self.controls_widget, 0, Qt.AlignVCenter)
+        self.footer_row.addStretch(1)
+        self.footer_row.addWidget(self.status_widget, 0, Qt.AlignVCenter)
+
+        self.main_layout.addLayout(self.footer_row)
+
+    def add_info_widget(self, widget):
+        """Attach an external control widget to the right-side status group."""
+        if hasattr(widget, 'setFixedHeight'):
+            widget.setFixedHeight(self.info_label.height())
+        self.status_row.addWidget(widget, 0, Qt.AlignVCenter)
+
+    def add_bottom_widget(self, widget):
+        """Attach an external widget below the footer row inside the video panel."""
+        self.main_layout.addWidget(widget)
     
     def load_video(self, video_path):
         """Load a video file for playback"""
@@ -96,6 +178,7 @@ class VideoPlayerWidget(QWidget):
         
         # Reset to first frame
         self.current_frame = 0
+        self.set_playback_speed("1x")
         self.show_frame(0)
         
         # Update UI to show video is loaded
@@ -114,12 +197,14 @@ class VideoPlayerWidget(QWidget):
         self.current_frame = 0
         self.total_frames = 0
         self.playing = False
+        self.playback_speed = 1.0
         
         # Stop the playback timer
         self.timer.stop()
         
         # Update UI
         self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self.set_playback_speed("1x")
         self.info_label.setText("No video loaded")
     
     def update_frame_display(self, frame):
@@ -185,6 +270,27 @@ class VideoPlayerWidget(QWidget):
         
         # Show the next frame
         self.show_frame(self.current_frame + 1)
+
+    def get_timer_interval_ms(self):
+        """Return timer interval for the currently selected playback speed."""
+
+        effective_fps = max(self.fps * self.playback_speed, 1.0)
+        return max(1, int(1000 / effective_fps))
+
+    def set_playback_speed(self, speed_text):
+        """Update playback speed from dropdown selection."""
+
+        if speed_text in self.speed_actions:
+            self.speed_actions[speed_text].setChecked(True)
+            self.speed_button.setText(speed_text)
+
+        try:
+            self.playback_speed = float(speed_text.rstrip('x'))
+        except ValueError:
+            self.playback_speed = 1.0
+
+        if self.playing:
+            self.timer.start(self.get_timer_interval_ms())
     
     def toggle_play(self):
         """Toggle between play and pause"""
@@ -197,11 +303,25 @@ class VideoPlayerWidget(QWidget):
         if self.playing:
             # Start playback
             self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
-            self.timer.start(int(1000 / self.fps))
+            self.timer.start(self.get_timer_interval_ms())
         else:
             # Pause playback
             self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
             self.timer.stop()
+
+    def restart_to_start(self):
+        """Return to frame 0 and stay paused until user presses play."""
+
+        if self.cap is None or not self.cap.isOpened():
+            return
+
+        # Ensure restart does not auto-play.
+        self.playing = False
+        self.timer.stop()
+        self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+
+        # Seek to the first frame; this emits frame_changed and syncs plots.
+        self.show_frame(0)
     
     def seek_percent(self, percent):
         """Seek to position specified as percentage (0-100)"""
