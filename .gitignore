@@ -24,7 +24,6 @@ results/
 saved_checkpoints/
 training_logs/
 videos/
-MIXTAPE_Results/
 archive/
 results.zip
 stats.jsonl

@@ -18,7 +18,6 @@ TARGETS=(
   "saved_checkpoints"
   "training_logs"
   "videos"
-  "MIXTAPE_Results"
   "results.zip"
   "__pycache__"
 )
