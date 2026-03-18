@@ -1,55 +1,53 @@
-# Crafter RL Platform – Comprehensive Technical Guide
+# Crafter RL Platform - Technical Project Guide
 
-This guide thoroughly explains the project: what it does, how it’s built, how to run it end-to-end, and how to analyze sequential decision-making using the visualization interface. It is intended for practitioners who want a deep understanding of the system and how to extend it.
+This guide documents the current implementation of the repository and aligns with the live code in the Dreamer and visualization modules.
 
-Scope note:
+Scope:
 
-- `README.md` is the quickstart and day-to-day entry point.
-- This document is the deep technical reference.
+- README.md is the quickstart.
+- This document is the deeper architecture and workflow reference.
 
 ---
 
-## 1. Overview
+## 1. Current System Overview
 
-The project is a full-stack platform for training and analyzing reinforcement learning agents in the Crafter environment using PPO & DreamerV2. It comprises:
+The project currently centers on Dreamer-based training and PyQt-based analysis for Crafter episodes.
 
-- A custom DreamerV2 implementation tailored to Crafter observations/actions.
-- Parallel environment rollout and prioritized replay.
-- Structured logs, per-step decision attribution, and episode exports.
-- A PyQt5 visual analysis interface that synchronizes gameplay video with metrics, rewards, and semantic signals.
+What is implemented today:
 
-The platform helps answer questions like: Which actions led to rewards? What did the agent believe (value/probability/exploration) before taking an action? Which resource components contributed to progress? How do achievements unfold across an episode?
+- DreamerV2 training loop with parallel environment stepping.
+- Decision-attribution logging during training.
+- Episode rollout/export utilities that write CSV and MP4 artifacts.
+- Interactive visualization with timeline-synced plots, achievements view, and explanation text.
+
+Important clarification:
+
+- PPO is not a training pipeline in this repository.
+- The visualizer can still display PPO-style columns (`entropy`, `advantage`) when those fields exist in a loaded CSV.
 
 ---
 
 ## 2. Repository Map
 
-- Training pipeline: [dreamer/train.py](dreamer/train.py)
-- Policy glue + replay buffer: [dreamer/policy.py](dreamer/policy.py)
-- DreamerV2 core models: [dreamer/core.py](dreamer/core.py)
-- Environment setup + recorder: [dreamer/env.py](dreamer/env.py)
-- Visualization main app: [vis/main.py](vis/main.py)
-  - Plots and UI components: [vis/widgets.py](vis/widgets.py)
-  - Data loader/normalizer: [vis/data_manager.py](vis/data_manager.py)
-  - Timeline synchronization: [vis/timeline.py](vis/timeline.py)
-  - Video player controls: [vis/video_player.py](vis/video_player.py)
-  - Template explainer module: [vis/explainer.py](vis/explainer.py)
-- Semantic event templates (optional, currently not wired): [SemanticEventDetector.py](SemanticEventDetector.py)
-- Visualization config/paths: [vis/config.py](vis/config.py)
-- Dependencies: [requirements.txt](requirements.txt)
+- Training orchestration: [dreamer/train.py](dreamer/train.py)
+- Policy wrapper and replay integration: [dreamer/policy.py](dreamer/policy.py)
+- Dreamer model components: [dreamer/core.py](dreamer/core.py)
+- Environment + episode export utilities: [dreamer/env.py](dreamer/env.py)
+- Main visualization window: [vis/main.py](vis/main.py)
+- Charts, info panel, explanation panel: [vis/widgets.py](vis/widgets.py)
+- CSV loading and signal normalization: [vis/data_manager.py](vis/data_manager.py)
+- Timeline mapping: [vis/timeline.py](vis/timeline.py)
+- Video playback widget: [vis/video_player.py](vis/video_player.py)
+- Deterministic template explainer: [vis/explainer.py](vis/explainer.py)
+- Visualization path defaults: [vis/config.py](vis/config.py)
+- Output archiving helper: [scripts/archive_outputs.sh](scripts/archive_outputs.sh)
+- Dependency pins: [requirements.txt](requirements.txt)
 
 ---
 
 ## 3. Environment and Dependencies
 
-Confirmed runtime libraries:
-
-- TensorFlow macOS 2.16.1 and TensorFlow Probability 0.20.0
-- Gym 0.25.2 (pre v1 API) and Crafter 1.8.3
-- NumPy, Pandas, Matplotlib (headless);
-- OpenCV for video; PyQt5 and pyqtgraph for the viz
-
-Install via:
+Install:
 
 ```bash
 python -m venv crafter_env
@@ -57,245 +55,196 @@ source crafter_env/bin/activate
 pip install -r requirements.txt
 ```
 
-Notes:
-- Code sets `TF_USE_LEGACY_KERAS=1` where needed to align TF/Keras APIs.
-- On Apple Silicon, TensorFlow-MacOS is used (already pinned in requirements).
+Pinned runtime stack includes:
+
+- tensorflow-macos 2.16.1
+- tensorflow-probability 0.20.0
+- gym 0.25.2
+- crafter 1.8.3
+- numpy 1.23.5
+- pandas 2.2.3
+- matplotlib 3.10.1
+- opencv-python 4.11.0.86
+- imageio 2.37.0
+- PyQt5 5.15.11
+- pyqtgraph 0.13.7
+
+Implementation note:
+
+- Dreamer modules set `TF_USE_LEGACY_KERAS=1` for compatibility with the pinned TF/Keras stack.
 
 ---
 
-## 4. Technical Architecture
+## 4. Architecture
 
 ### 4.1 Training Loop (dreamer/train.py)
 
-- Spawns `num_envs` parallel `CrafterReward-v1` environments.
-- Alternates rollout and learning: for each step, actions are produced by the policy, environments step, transitions are added to replay, and periodic updates/logging occur.
-- Directory management automatically suffixes checkpoint/log dirs by target step (e.g., `ckpt_250000`, `log_250000`).
-- Decision attribution logging occurs every ~1000 steps for one env: records action probability, exploration bonus, world-model score, and value estimate.
+- `train_dreamer(...)` creates `num_envs` Crafter environments.
+- Actions are produced from `DreamerPolicy`, environments are stepped, and transitions are fed back through policy updates.
+- Checkpoint and log directories are rewritten to step-suffixed targets:
+  - checkpoint directory becomes `.../ckpt_<target_steps>`
+  - log directory becomes `.../log_<target_steps>`
+- Decision attribution is periodically logged to `decision_attribution.csv` with columns:
+  - `step`, `action_taken`, `action_probability`, `world_model_score`, `exploration_bonus`, `value_estimate`
+- Aggregate metrics are appended to `dreamer_training_log.csv`.
 
-### 4.2 Policy and Replay (dreamer/policy.py)
+### 4.2 Policy Layer (dreamer/policy.py)
 
-- `DreamerPolicy` wraps the agent and provides:
-  - Global step tracking and checkpoint resume.
-  - `EnhancedReplayBuffer` with episode boundary awareness:
-    - Avoids sampling sequences that cross terminal boundaries.
-    - Prioritized sampling with importance weights (alpha/beta schedule).
-  - Batched sequence sampling (`batch_size` × `sequence_length`) feeding DreamerV2.
-  - `log_decision_attribution(obs, action)` computing signals for analysis (action prob, exploration/world-model, value).
+- `DreamerPolicy` acts as the bridge between environment interaction and Dreamer updates.
+- It exposes methods used by training/analysis code, including decision-attribution calls used for explainability data.
 
-### 4.3 DreamerV2 Core (dreamer/core.py)
+### 4.3 Dreamer Core (dreamer/core.py)
 
-- Implements a DreamerV2-style model stack:
-  - `RSSM`: recurrent state-space model with discrete latents (categorical, OneHotCategorical) and GRU core.
-  - `Encoder`: CNN turns pixel observations (uint8) into embeddings.
-  - `Decoder`: deconvolutional decoder reconstructs pixels for representation learning.
-  - Actor/Critic heads (present in file) produce action distributions and value estimates from latent states.
-  - “Imagination” unrolls latent dynamics (`imagination_horizon`) to train actor/critic via predicted returns.
-- Representation loss: reconstruction and KL between posterior/prior latents.
-- Critic loss: value fit on imagined targets (e.g., lambda-returns).
+- Contains Dreamer model internals (RSSM-style latent dynamics, encoder/decoder, actor/critic components).
+- Supports action/value attribution values consumed by logging and visualization.
 
-### 4.4 Environment Integration (dreamer/env.py)
-### 4.5 Visualization Stack
-- Main app (`vis/main.py`) composes:
-  - Left: `VideoPlayerWidget` (OpenCV-backed frame display + play/step controls).
-  - Right: `VisualizationWidget` (pyqtgraph plots) or `InfoPanel` (achievements view) via a stacked widget.
-  - Bottom: mode-aware panel:
-    - charts mode: decision attribution plot
-    - achievements mode: Explanation Toolbox (`ExplanationPanel`) with step-level NLP templates
-  - Decision signals: `action_probability`, `value`/`value_estimate`, `entropy`, `advantage`, `exploration_bonus`, `world_model_score`
-  - Normalized traces for overlays (0–1 scaling, guarded against degenerate ranges)
-- Plots in `vis/widgets.py`:
-  - Cumulative reward line + per-step bar graph; `DecisionPoint` markers with action-aware tooltips; vertical cursor.
-  - Reward component stacked areas/lines for non-zero series; dynamic legend.
-  - Decision attribution overlay: always `value` + `action_probability`; plus PPO (`entropy`, `advantage`) or DreamerV2 (`exploration_bonus`, `world_model_score`) when available.
-- Synchronization:
-  - Slider percent → video frame → episode step using `frame_step_ratio` mapping.
-  - Video `frame_changed` events update slider and plots; the app updates both `InfoPanel` and `ExplanationPanel` at the current step.
+### 4.4 Episode Export Flow (dreamer/env.py)
 
-### 4.6 Template Explanation Toolbox (vis/explainer.py + vis/widgets.py)
+- `create_environment(...)` builds a Crafter env and wraps it with `crafter.Recorder`.
+- `run_episode(...)` writes per-step CSV rows and optional MP4 output.
+- Export filenames are normalized using checkpoint/episode info when present in folder paths.
 
-- `vis/explainer.py` provides deterministic template generation via `generate_explanation(...)`.
-- Input: current step row, previous step row, and algorithm mode (`dreamer` / `ppo` / `unknown`).
-- Output: concise natural language text describing confidence, value trend, and algorithm-specific signals.
-- `ExplanationPanel` is rendered in the bottom pane during Achievements mode and stays synchronized with timeline/video scrubbing.
+### 4.5 Visualization App (vis/main.py + vis/widgets.py)
 
----
+The main window is split into:
 
-## 5. Data and Directory Layouts
+- Left: video player.
+- Right: stacked charts or achievements panel.
+- Bottom: mode-dependent panel.
 
-### 5.1 Expected CSV columns
+Bottom panel behavior:
 
-- Required: `time_step`, `action`, `reward`
-- Optional (used when present):
-  - `executed_action`, `action_probability`, `value` or `value_estimate`
-  - PPO: `entropy`, `advantage`
-  - DreamerV2: `exploration_bonus`, `world_model_score`
-  - `inventory` as a Python-style dict string, e.g., `{"wood": 3, "stone": 1}`
+- Charts mode: decision-attribution plot.
+- Achievements mode: explanation toolbox text panel.
 
-`VisDataManager` expands inventory keys into component time series. Zero-only components are hidden from the plot.
+Menu flows:
 
-### 5.2 Training outputs
+- Open Random Log and Video
+- Open from Results
+- Open from Logs Directory
 
-- Checkpoints: `dreamer_checkpoints/ckpt_<STEPS>/ckpt-<N>`
-- Logs: `logs_dreamer/log_<STEPS>/dreamer_training_log.csv`, `decision_attribution.csv`, plus text logs
-- Videos: `videos/` (episode recordings if enabled)
+View toggles:
 
-### 5.3 Results for Viz
+- Cumulative rewards
+- Reward components
+- Decision attribution
 
-- Logs directory: `logs/` (used by viz quick-open)
-- Results directory: `results/dreamer_v2/checkpoint_*/episode_*/`
-  - Typical episode contents: `data.csv`, one or more `.mp4` files
+### 4.6 Explanation Generation (vis/explainer.py)
+
+- `generate_explanation(step_row, prev_row, algorithm)` creates deterministic step-level text.
+- Supports Dreamer, PPO-style, and unknown signal sets.
+- Algorithm can be inferred from available columns.
 
 ---
 
-## 6. Running the System
+## 5. Data Model and File Layout
 
-For minimal setup/run commands, prefer `README.md` first; this section keeps the full workflow examples.
+### 5.1 CSV Fields Used by the Visualizer
 
-### 6.1 Setup environment
+Required fields:
 
-```bash
-python -m venv crafter_env
-source crafter_env/bin/activate
-pip install -r requirements.txt
-```
+- `time_step`
+- `action`
+- `reward`
 
-### 6.2 Train an agent
+Optional fields:
+
+- `executed_action`
+- `action_probability`
+- `value` or `value_estimate`
+- Dreamer-style: `exploration_bonus`, `world_model_score`
+- PPO-style: `entropy`, `advantage`
+- inventory/resource columns (either explicit columns or inventory-derived content)
+
+### 5.2 Training Artifacts
+
+Typical outputs from Dreamer training:
+
+- `.../ckpt_<target_steps>/` (checkpoint files)
+- `.../log_<target_steps>/dreamer_training_log.csv`
+- `.../log_<target_steps>/decision_attribution.csv`
+- `.../log_<target_steps>/dreamer_training.txt`
+
+### 5.3 Visualization Source Directories
+
+`vis/config.py` resolves input directories this way:
+
+1. If `archive/run_*` exists, pick the latest run and use its `logs/` and `results/`.
+2. Otherwise, use root-level `logs/` and `results/`.
+
+This makes archived runs first-class inputs for the UI.
+
+---
+
+## 6. Running Workflows
+
+### 6.1 Train Dreamer (Python API)
 
 ```bash
 python - <<'PY'
 from dreamer.train import train_dreamer
+
 train_dreamer(
     env_name='CrafterReward-v1',
     total_steps=250000,
     num_envs=4,
     save_interval=10000,
+    checkpoint_dir='./dreamer_checkpoints',
+    log_dir='./training_logs',
 )
 PY
 ```
 
-To resume from a checkpoint:
+### 6.2 Train Dreamer (CLI)
 
 ```bash
-python - <<'PY'
-from dreamer.train import train_dreamer
-train_dreamer(
-    total_steps=100000,
-    load_checkpoint=True,
-    checkpoint_dir='./dreamer_checkpoints/ckpt_250000',
-)
-PY
+python -m dreamer.train --mode train --steps 250000 --checkpoint-dir ./dreamer_checkpoints --log-dir ./training_logs
 ```
 
-### 6.3 Visualize an episode
+### 6.3 Run Visualization
 
 ```bash
 python -m vis.main
 ```
 
-In the app:
-
-- File → Open Random Log and Video (looks in `logs/`)
-- File → Open from Results (navigates `results/dreamer_v2/...`)
-- Use the bottom slider or video controls; charts, achievements, and explanation text update in sync.
-- Toggle button behavior:
-  - `Show Achievements`: right pane shows achievements; bottom pane shows Explanation Toolbox.
-  - `Show Charts`: right pane shows charts; bottom pane shows decision attribution plot.
-- View menu toggles cumulative, components, and decision attribution visibility.
+Use the File menu to load random logs, browse results episodes, or open log files directly.
 
 ---
 
-## 7. Sequential Decision Analysis Workflow
+## 7. Analysis Workflow in the UI
 
-1. Identify a reward jump in the cumulative timeline; hover the `DecisionPoint` to see action, reward size, and the step index.
-2. Glance at the decision attribution overlay: were value and action probability high? Was entropy/exploration elevated beforehand? This explains confidence and exploration behavior.
-3. Inspect reward components: which resource signals changed? Inventory-derived lines show resource collection/crafting effects.
-4. Switch to the Info panel: see achievements unlocked near the current step and dependencies required for missing ones.
-5. Use the Explanation Toolbox while in Achievements mode to read a textual summary for the current step.
-6. Move frame-by-frame to study short sequences around pivotal decisions; correlate video context with attribution signals and template narration.
-
-This workflow reveals credit assignment patterns, exploration efficacy, and prerequisite milestones for complex behaviors.
+1. Load a CSV + MP4 pair.
+2. Use timeline/video controls to align visual events with numeric signals.
+3. Inspect cumulative reward and component traces for regime shifts.
+4. Use decision attribution to compare confidence/value/exploration signals.
+5. Switch to Achievements mode to inspect completion status and explanation text at the current step.
 
 ---
 
-## 8. Configuration and Hyperparameters
+## 8. Troubleshooting
 
-- `train_dreamer(...)` parameters:
-  - `env_name`, `total_steps`, `num_envs`, `log_interval`, `save_interval`
-  - `checkpoint_dir`, `log_dir`, `video_dir`, `load_checkpoint`
-- `DreamerPolicy(...)`:
-  - `replay_capacity`, `batch_size`, `sequence_length`, `training_interval`, `save_interval`
-  - `parallel_envs`, `checkpoint_path`
-- `DreamerV2(...)`:
-  - `actor_entropy` (exploration), `imagination_horizon`, encoder/decoder sizes, RSSM latent sizes/classes
-
-Tips:
-
-- Increase `num_envs` for better sample throughput; watch CPU/GPU limits.
-- Tune `actor_entropy` to balance exploration vs exploitation.
-- Lengthen `sequence_length` if long-term dependencies matter; ensure replay can hold enough sequences.
+- UI imports fail: launch from repo root with `python -m vis.main`.
+- No files shown in quick-open: verify `logs/` and `results/` exist under the latest archive run or project root.
+- Missing attribution curves: confirm CSV contains corresponding columns or that training produced `decision_attribution.csv`.
+- TensorFlow compatibility issues: use pinned versions from requirements and keep `TF_USE_LEGACY_KERAS=1` behavior intact.
+- Missing video pair: the app will prompt for MP4 selection when auto-matching fails.
 
 ---
 
-## 9. Performance and Scaling
+## 9. FAQ
 
-- Parallel envs are CPU-bound; use moderate values (e.g., 4–8) on laptops.
-- TensorFlow ops benefit from Apple Neural Engine/GPU where available; keep observations uint8 and batch operations in TF.
-- Reduce UI overhead during training by using headless plotting (`matplotlib.use("Agg")`)—already set.
+- Can I analyze non-Dreamer CSV logs?
+  Yes. If required columns exist, the visualizer will plot what is available.
 
----
+- Does the project train PPO agents?
+  Not in the current code. PPO fields are visualization-compatible only.
 
-## 10. Troubleshooting
-
-- TensorFlow/Keras API mismatch: ensure `TF_USE_LEGACY_KERAS=1` and versions pinned in [requirements.txt](requirements.txt).
-- No video in viz: confirm `.mp4` exists next to the CSV (same folder). `vis/main.py` will prompt if missing.
-- Empty components: likely zero-only series; check `inventory` column content in CSV.
-- Slow playback: lower video resolution or limit frame rate; the player scales frames to the widget size.
-- Checkpoint not found: verify path naming (`ckpt_<STEPS>/ckpt-<N>`). `DreamerPolicy` prints loaded step.
-- Import error on launch: run `python -m vis.main` from project root (not `python vis/main.py`).
+- Where should old outputs go?
+  Use [scripts/archive_outputs.sh](scripts/archive_outputs.sh) to move generated folders into timestamped archive runs.
 
 ---
 
-## 11. FAQ
-
-- Can I visualize PPO logs? Yes—if your CSV includes `entropy`/`advantage`, the decision attribution plot will show PPO overlays.
-- Can I generate natural language explanations? Yes—`vis/explainer.py` powers the Explanation Toolbox shown in Achievements mode.
-- Can I extend event detection? Use [SemanticEventDetector.py](SemanticEventDetector.py) and wire events into `vis/widgets.py` (icons or bands) keyed to `time_step`.
-- Do I need videos? The viz works best with video; without it, you can still scrub plots via the slider.
-
----
-
-## Appendix: Recent Cleanup Notes
-
-Removed legacy standalone scripts that were not in the core runtime/import path:
-
-- `MIXTAPE_Save.py`
-- `test_data_loading.py`
-- `debug_decision_data.py`
-- `analyze_rewards.py`
-- duplicate root `VisConfig.py` (active config is `vis/config.py`)
-
----
-
-## 12. Roadmap and Extensions
-
-- Add TD-error, advantage, and logits to tooltips for deeper diagnostics.
-- Record imagined trajectories (DreamerV2) and overlay as predicted outcome bands.
-- Bookmark/tag key steps in the UI and export a review set.
-- Batch import of episodes with a comparison dashboard (per-checkpoint).
-
----
-
-## 13. Glossary
-
-- RSSM: Recurrent State-Space Model—latent dynamics with a recurrent core and discrete variables.
-- Decision attribution: signals explaining a decision (probability, value, exploration/world-model scores).
-- Inventory-derived components: numerical traces extracted from item counts/resources in the episode log.
-
----
-
-## 14. Quick Commands
-
-These commands mirror `README.md` and are repeated here for convenience.
+## 10. Quick Commands
 
 Setup:
 
@@ -308,10 +257,7 @@ pip install -r requirements.txt
 Train:
 
 ```bash
-python - <<'PY'
-from dreamer.train import train_dreamer
-train_dreamer(total_steps=250000, num_envs=4, save_interval=10000)
-PY
+python -m dreamer.train --mode train --steps 250000 --checkpoint-dir ./dreamer_checkpoints --log-dir ./training_logs
 ```
 
 Visualize:
@@ -319,5 +265,3 @@ Visualize:
 ```bash
 python -m vis.main
 ```
-
-This document is meant to be exhaustive yet navigable. Use it as the central reference while developing, training, and analyzing agents with this platform.
