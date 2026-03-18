@@ -2,6 +2,8 @@
 
 import sys
 import os
+import re
+from datetime import datetime
 from PyQt5.QtWidgets import QApplication, QMainWindow, QFileDialog, QSplitter, QVBoxLayout, QWidget
 from PyQt5.QtCore import Qt, QTimer, QFileSystemWatcher
 from PyQt5.QtWidgets import QStackedWidget, QPushButton
@@ -210,31 +212,91 @@ class MainWindow(QMainWindow):
         return csv_files
 
     def open_random_files(self):
-        """Randomly select a log file and its corresponding video file."""
-        # List all CSV log files in the logs directory
-        csv_files = [f for f in os.listdir(DEFAULT_LOG_DIR) if f.endswith('.csv')]
-        if not csv_files:
-            print("No log files found.")
+        """Randomly select only a validated CSV/MP4 pair from logs."""
+
+        if not os.path.isdir(DEFAULT_LOG_DIR):
+            print(f"Logs directory not found: {DEFAULT_LOG_DIR}")
             return
 
-        # Pick a random csv file
-        random_csv = random.choice(csv_files)
-        csv_path = os.path.join(DEFAULT_LOG_DIR, random_csv)
+        pairs = self._build_valid_log_video_pairs(DEFAULT_LOG_DIR)
+        if not pairs:
+            print("No validated CSV/MP4 pairs found in logs directory.")
+            return
 
-        # Try to find the corresponding video file (same base name, .mp4)
-        base_name = os.path.splitext(random_csv)[0]
-        video_path = os.path.join(DEFAULT_LOG_DIR, f"{base_name}.mp4")
-
-        # If the video doesn't exist, pick a random video file
-        if not os.path.exists(video_path):
-            video_files = [f for f in os.listdir(DEFAULT_LOG_DIR) if f.endswith('.mp4')]
-            if not video_files:
-                print("No video files found.")
-                return
-            video_path = os.path.join(DEFAULT_LOG_DIR, random.choice(video_files))
-
-        # Load the selected files
+        csv_path, video_path = random.choice(pairs)
         self.load_data(csv_path, video_path)
+
+    def _extract_csv_timestamp(self, csv_path):
+        """Parse event log timestamp from filenames like event_log_17.03_12.13.09.csv."""
+
+        name = os.path.basename(csv_path)
+        match = re.match(r"event_log_(\d{2})\.(\d{2})_(\d{2})\.(\d{2})\.(\d{2})\.csv$", name)
+        if not match:
+            return None
+
+        day, month, hour, minute, second = map(int, match.groups())
+        try:
+            year = datetime.fromtimestamp(os.path.getmtime(csv_path)).year
+            return datetime(year, month, day, hour, minute, second)
+        except (ValueError, OSError):
+            return None
+
+    def _extract_video_timestamp(self, video_name):
+        """Parse MP4 timestamp from filenames like 20250317T121309-ach1-len155.mp4."""
+
+        match = re.match(r"(\d{8}T\d{6})-ach\d+-len\d+\.mp4$", video_name)
+        if not match:
+            return None
+
+        try:
+            return datetime.strptime(match.group(1), "%Y%m%dT%H%M%S")
+        except ValueError:
+            return None
+
+    def _find_matching_video_for_csv(self, csv_path, video_dir, max_seconds=900):
+        """Find the nearest timestamp-matched video for a CSV; return None when ambiguous."""
+
+        csv_time = self._extract_csv_timestamp(csv_path)
+        if csv_time is None:
+            return None
+
+        candidates = []
+        for filename in os.listdir(video_dir):
+            if not filename.endswith('.mp4'):
+                continue
+            video_time = self._extract_video_timestamp(filename)
+            if video_time is None:
+                continue
+            delta_seconds = abs((video_time - csv_time).total_seconds())
+            if delta_seconds <= max_seconds:
+                candidates.append((delta_seconds, filename))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda item: item[0])
+        return os.path.join(video_dir, candidates[0][1])
+
+    def _build_valid_log_video_pairs(self, log_dir):
+        """Build CSV/MP4 pairs using timestamp matching and strict filtering."""
+
+        pairs = []
+        for filename in os.listdir(log_dir):
+            if not filename.endswith('.csv'):
+                continue
+            csv_path = os.path.join(log_dir, filename)
+
+            base_name = os.path.splitext(filename)[0]
+            base_video = os.path.join(log_dir, f"{base_name}.mp4")
+            if os.path.exists(base_video):
+                pairs.append((csv_path, base_video))
+                continue
+
+            matched_video = self._find_matching_video_for_csv(csv_path, log_dir)
+            if matched_video:
+                pairs.append((csv_path, matched_video))
+
+        return pairs
 
     def setup_menu(self):
         """Create the application menu bar with actions"""
@@ -417,6 +479,9 @@ class MainWindow(QMainWindow):
         video_dir = os.path.dirname(log_file)
         possible_video = os.path.join(video_dir, f"{base_name}.mp4")
         video_file = possible_video if os.path.exists(possible_video) else None
+
+        if not video_file:
+            video_file = self._find_matching_video_for_csv(log_file, video_dir)
         
         # If no matching video found, ask user to select
         if not video_file:
@@ -515,6 +580,7 @@ class MainWindow(QMainWindow):
         total_steps = len(self.data_manager.time_steps)
         total_frames = self.video_player.total_frames
         self.timeline.setup(total_steps, total_frames)
+        self.timeline.update_mapping_status(0, self.timeline.frame_to_step(0, offset=self.frame_offset), offset=self.frame_offset)
 
         # Prime right-side achievements and bottom explanation at episode start.
         self.info_panel.update_state(0)
@@ -550,7 +616,8 @@ class MainWindow(QMainWindow):
         
         # Calculate corresponding step for visualization
         frame = self.video_player.current_frame
-        step = self.timeline.frame_to_step(frame)
+        step = self.timeline.frame_to_step(frame, offset=self.frame_offset)
+        self.timeline.update_mapping_status(frame, step, offset=self.frame_offset)
         
         # Update visualization position without triggering back-propagation
         self.visualization.update_position(step, from_timeline=True)
@@ -576,6 +643,7 @@ class MainWindow(QMainWindow):
         
         # Calculate corresponding step for visualization with offset
         step = self.timeline.frame_to_step(frame, offset=self.frame_offset)
+        self.timeline.update_mapping_status(frame, step, offset=self.frame_offset)
         
         # Update visualization position
         self.visualization.update_position(step, from_video=True)

@@ -1,8 +1,7 @@
 # timeline_controller.py - Unified timeline control for synchronization
 
-from PyQt5.QtWidgets import QWidget, QHBoxLayout, QSlider, QLabel, QPushButton
-from PyQt5.QtCore import Qt, pyqtSignal, QObject
-from PyQt5.QtWidgets import QCheckBox
+from PyQt5.QtWidgets import QWidget, QHBoxLayout, QSlider, QLabel
+from PyQt5.QtCore import Qt, pyqtSignal
 
 
 
@@ -36,9 +35,14 @@ class TimelineController(QWidget):
         self.position_slider.setValue(0)
         self.position_slider.valueChanged.connect(self.on_slider_value_changed)
         layout.addWidget(self.position_slider)
-        
-        # Position label
-        self.position_label = QLabel("0%")
+
+        # Step counter – primary timeline unit.
+        self.step_frame_label = QLabel("Step: 0 / 0")
+        layout.addWidget(self.step_frame_label)
+
+        self.position_label = QLabel("0.0%")
+        self.position_label.setMinimumWidth(52)
+        self.position_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         layout.addWidget(self.position_label)
         
         # Set fixed height
@@ -55,6 +59,7 @@ class TimelineController(QWidget):
         
         # Reset position
         self.set_position(0)
+        self.update_mapping_status(0, 0)
     
     def set_position(self, position, from_video=False, from_viz=False):
         """Set the position (0-100%)"""
@@ -102,6 +107,16 @@ class TimelineController(QWidget):
         
         # Ensure step is within valid range
         return max(0, min(step, self.total_steps - 1))
+
+    def update_mapping_status(self, frame, step, offset=0):
+        """Update step counter label for the current cursor position."""
+
+        if self.total_steps <= 0:
+            self.step_frame_label.setText("Step: 0 / 0")
+            return
+
+        safe_step = max(0, min(int(step), self.total_steps - 1))
+        self.step_frame_label.setText(f"Step: {safe_step} / {self.total_steps - 1}")
 
 
 
