@@ -3,8 +3,9 @@
 import sys
 import os
 import re
+import numpy as np
 from datetime import datetime
-from PyQt5.QtWidgets import QApplication, QMainWindow, QFileDialog, QSplitter, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QApplication, QMainWindow, QFileDialog, QSplitter, QVBoxLayout, QWidget, QInputDialog
 from PyQt5.QtCore import Qt, QTimer, QFileSystemWatcher
 from PyQt5.QtWidgets import QStackedWidget, QPushButton
 from PyQt5.QtWidgets import QCheckBox
@@ -14,6 +15,7 @@ from .widgets import VisualizationWidget, InfoPanel, ExplanationPanel
 from .data_manager import DataManager
 from .timeline import TimelineController
 from .config import DEFAULT_LOG_DIR, RESULTS_LOG_DIR, VIZ_COLORS, DEFAULT_FPS
+from .study_logger import StudyLogger
 import random
 
 class MainWindow(QMainWindow):
@@ -21,30 +23,60 @@ class MainWindow(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        
-        # Setup the main window properties
+
         self.setWindowTitle("Crafter Analysis Tool")
         self.setGeometry(100, 100, 1200, 800)
 
-        self.frame_offset = 1
+        participant_id, ok = QInputDialog.getText(
+            self,
+            "Study Session",
+            "Enter participant ID:",
+        )
+        self.logger = StudyLogger(participant_id=participant_id.strip() if ok and participant_id else None)
+        self.logger.update_ui_state(theme="light", panel="plots")
+        self._loading_phase = True
 
-        # Create the central widget and layout
+        self.frame_offset = 1
+        self.showing_info_panel = False
+
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
         main_layout.setContentsMargins(6, 6, 6, 6)
         main_layout.setSpacing(6)
 
-        self.showing_info_panel = False  # Track current view
+        self.main_splitter = QSplitter(Qt.Horizontal)
+        self.main_splitter.setChildrenCollapsible(True)
+        self.main_splitter.setHandleWidth(10)
+        self.main_splitter.setStyleSheet(
+            """
+            QSplitter::handle:horizontal {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #b7b7b7, stop:0.5 #8f8f8f, stop:1 #b7b7b7);
+                border-left: 1px solid #7a7a7a;
+                border-right: 1px solid #7a7a7a;
+            }
+            """
+        )
+        main_layout.addWidget(self.main_splitter)
 
-        
-        # Vertical split: top (video + right panel) and bottom (full-width decision plot).
-        self.vertical_splitter = QSplitter(Qt.Vertical)
-        main_layout.addWidget(self.vertical_splitter)
+        self.left_column = QWidget()
+        self.left_column_layout = QVBoxLayout(self.left_column)
+        self.left_column_layout.setContentsMargins(0, 0, 0, 0)
+        self.left_column_layout.setSpacing(6)
 
-        # Top area split: video on left, stacked plots/info on right.
-        self.top_splitter = QSplitter(Qt.Horizontal)
-        self.vertical_splitter.addWidget(self.top_splitter)
+        self.right_column = QWidget()
+        self.right_column_layout = QVBoxLayout(self.right_column)
+        self.right_column_layout.setContentsMargins(0, 0, 0, 0)
+        self.right_column_layout.setSpacing(6)
+
+        self.main_splitter.addWidget(self.left_column)
+        self.main_splitter.addWidget(self.right_column)
+        self.main_splitter.splitterMoved.connect(
+            lambda pos, index: self._on_splitter_moved("main_splitter", pos, index)
+        )
+
+        self.data_manager = DataManager()
 
         self.toggle_button = QPushButton()
         self.toggle_button.setFixedHeight(32)
@@ -54,69 +86,54 @@ class MainWindow(QMainWindow):
             "QPushButton:hover { background-color: #ffffff; border-color: #6f6f6f; }"
             "QPushButton:pressed { background-color: #e8e8e8; }"
         )
-
         self.toggle_button.clicked.connect(self.toggle_view)
 
-        self.showing_info_panel = False  # Track what is shown
-
-        
-        # Create data manager to handle CSV data and synchronization
-        self.data_manager = DataManager()
-        
-        # Create video player widget (left panel)
         self.video_player = VideoPlayerWidget()
-        self.top_splitter.addWidget(self.video_player)
         self.video_player.add_info_widget(self.toggle_button)
-        self.update_toggle_button_label()
-        
-        # Create visualization widget (right panel)
-        # Right side: Stacked widget
-        self.right_widget = QStackedWidget()
-        self.top_splitter.addWidget(self.right_widget)
+        self.left_column_layout.addWidget(self.video_player, 3)
 
-        self.visualization = VisualizationWidget(self.data_manager)  # plots
+        self.explanation_panel = ExplanationPanel(self.data_manager)
+        self.left_column_layout.addWidget(self.explanation_panel, 1)
+
+        self.right_widget = QStackedWidget()
+        self.visualization = VisualizationWidget(self.data_manager)
         self.info_panel = InfoPanel()
         self.info_panel.data_manager = self.data_manager
-        self.explanation_panel = ExplanationPanel(self.data_manager)
-
-        self.right_widget.addWidget(self.visualization)  # index 0
-        self.right_widget.addWidget(self.info_panel)     # index 1
-
+        self.right_widget.addWidget(self.visualization)
+        self.right_widget.addWidget(self.info_panel)
         self.right_widget.setCurrentIndex(0)
+        self.right_column_layout.addWidget(self.right_widget, 3)
 
-        # Bottom full-width row for decision attribution plot.
-        self.decision_container = QWidget()
-        self.decision_layout = QVBoxLayout(self.decision_container)
-        self.decision_layout.setContentsMargins(0, 0, 0, 0)
-        self.decision_layout.setSpacing(0)
-        self.vertical_splitter.addWidget(self.decision_container)
-        
-        # self.visualization.data_manager = self.data_manager
-        
+        self.bottom_right_container = QWidget()
+        self.bottom_right_layout = QVBoxLayout(self.bottom_right_container)
+        self.bottom_right_layout.setContentsMargins(0, 0, 0, 0)
+        self.bottom_right_layout.setSpacing(0)
+        self.right_column_layout.addWidget(self.bottom_right_container, 1)
 
-        # Create timeline controller at bottom
+        self.empty_bottom_panel = QWidget()
+        self.empty_bottom_panel.setStyleSheet(
+            "QWidget { background-color: #f5f5f5; border: 1px dashed #d0d0d0; border-radius: 4px; }"
+        )
+
         self.timeline = TimelineController()
         self.video_player.add_bottom_widget(self.timeline)
-        
-        # Set initial splitter sizes — video panel is kept compact so graphs
-        # get the most horizontal space.
-        self.top_splitter.setSizes([360, 840])
-        self.vertical_splitter.setSizes([590, 210])
-        
-        # Connect signals between components
+
         self.timeline.position_changed.connect(self.on_timeline_position_changed)
         self.timeline.position_changed.connect(self.visualization.update_decision_marker)
         self.video_player.frame_changed.connect(self.on_video_frame_changed)
 
-        # Dev productivity: auto-reload app when vis source files are saved.
-        self.setup_auto_reload()
+        self._connect_logging_signals()
+        self._attach_visibility_tracking()
 
-        # Setup menu actions
+        self.setup_auto_reload()
         self.setup_menu()
-        
-        # Load the most recent data by default
-        # self.load_latest_data()
+
+        self.main_splitter.setSizes([500, 840])
+        self._mount_right_bottom_panel()
+        self.update_toggle_button_label()
+
         self.open_random_files()
+        self._loading_phase = False
 
     def setup_auto_reload(self):
         """Watch vis/*.py and restart process automatically after file saves."""
@@ -127,7 +144,7 @@ class MainWindow(QMainWindow):
         self._reload_timer.setSingleShot(True)
         self._reload_timer.setInterval(250)
         self._reload_timer.timeout.connect(self.restart_process)
-
+        self._mount_right_bottom_panel()
         self._watcher = QFileSystemWatcher(self)
         self.vis_dir = os.path.dirname(__file__)
         self.refresh_watched_files()
@@ -176,10 +193,22 @@ class MainWindow(QMainWindow):
         if self.showing_info_panel:
             self.right_widget.setCurrentIndex(0)  # Show plots
             self.showing_info_panel = False
+            panel = "plots"
         else:
             self.right_widget.setCurrentIndex(1)  # Show info panel
             self.showing_info_panel = True
-        self._mount_bottom_panel()
+            panel = "achievements"
+        self.logger.update_ui_state(panel=panel)
+        self.logger.log(
+            "toggle_info_plots",
+            {
+                "target_id": "toggle_info_plots",
+                "interaction_type": "button_click",
+                "switched_to": panel,
+                "source": "user_input",
+            },
+        )
+        self._mount_right_bottom_panel()
         self.update_toggle_button_label()
 
     def update_toggle_button_label(self):
@@ -188,6 +217,103 @@ class MainWindow(QMainWindow):
             self.toggle_button.setText("Show Charts")
         else:
             self.toggle_button.setText("Show Achievements")
+        self._mount_right_bottom_panel()
+    def _connect_logging_signals(self):
+        self.video_player.interaction_event.connect(self._on_widget_interaction)
+        self.timeline.interaction_event.connect(self._on_widget_interaction)
+        self.visualization.interaction_event.connect(self._on_widget_interaction)
+        self.info_panel.interaction_event.connect(self._on_widget_interaction)
+
+    def _attach_visibility_tracking(self):
+        self.logger.attach_visibility_tag("video_panel", self.video_player)
+        self.logger.attach_visibility_tag("timeline_slider", self.timeline)
+        self.logger.attach_visibility_tag("cumulative_plot", self.visualization.cumulative_plot)
+        self.logger.attach_visibility_tag("components_plot", self.visualization.components_plot)
+        self.logger.attach_visibility_tag("info_panel", self.info_panel)
+        self.logger.attach_visibility_tag("explanation_panel", self.explanation_panel)
+        self.logger.attach_visibility_tag("decision_container", self.bottom_right_container)
+
+    def _on_widget_interaction(self, event_type, payload):
+        payload = payload or {}
+        payload.setdefault("source", "system_init" if self._loading_phase else "user_input")
+
+        if event_type == "speed_change":
+            self.logger.update_ui_state(playback_speed=payload.get("playback_speed", 1.0))
+
+        if event_type == "tab_switch":
+            self.logger.update_ui_state(active_tab=payload.get("tab", "completed"))
+
+        if event_type == "plot_viewport_changed":
+            plot_name = payload.get("plot", "unknown")
+            self.logger.set_viewport_state(
+                plot_name,
+                payload.get("x_range"),
+                payload.get("y_range"),
+            )
+
+        self.logger.log(event_type, payload)
+
+    def _on_view_toggle(self, view_name, visible):
+        self.visualization.toggle_view(view_name, visible)
+        filters_state = dict(self.logger.ui_state.get("filters", {}))
+        filters_state[view_name] = bool(visible)
+        self.logger.update_ui_state(filters=filters_state)
+        self.logger.log(
+            "view_toggle",
+            {
+                "target_id": "view_menu",
+                "interaction_type": "menu_toggle",
+                "view": view_name,
+                "visible": bool(visible),
+                "source": "user_input",
+            },
+        )
+
+    def _on_auto_reload_toggled(self, checked):
+        self.auto_reload_enabled = checked
+        self.logger.log(
+            "view_toggle",
+            {
+                "target_id": "auto_reload",
+                "interaction_type": "menu_toggle",
+                "view": "auto_reload",
+                "visible": bool(checked),
+                "source": "user_input",
+            },
+        )
+
+    def _log_study_marker(self, marker_event_type):
+        self.logger.log(
+            marker_event_type,
+            {
+                "target_id": "study_menu",
+                "interaction_type": "study_marker",
+                "marker": marker_event_type,
+                "source": "user_input",
+            },
+        )
+
+    def _on_splitter_moved(self, splitter_name, pos, index):
+        if not self.logger.should_emit(f"layout_splitter_{splitter_name}", 0.10):
+            return
+
+        sizes = self.main_splitter.sizes()
+        layout_state = dict(self.logger.ui_state.get("layout", {}))
+        layout_state[splitter_name] = list(sizes)
+        self.logger.update_ui_state(layout=layout_state)
+
+        self.logger.log(
+            "layout_change",
+            {
+                "target_id": splitter_name,
+                "interaction_type": "splitter_move",
+                "splitter": splitter_name,
+                "position": int(pos),
+                "handle_index": int(index),
+                "sizes": list(sizes),
+                "source": "user_input",
+            },
+        )
 
 
 
@@ -335,22 +461,36 @@ class MainWindow(QMainWindow):
         show_cumulative = view_menu.addAction('Show Cumulative Rewards')
         show_cumulative.setCheckable(True)
         show_cumulative.setChecked(True)
-        show_cumulative.triggered.connect(lambda checked: self.visualization.toggle_view('cumulative', checked))
+        show_cumulative.triggered.connect(lambda checked: self._on_view_toggle('cumulative', checked))
         
         show_components = view_menu.addAction('Show Reward Components')
         show_components.setCheckable(True)
         show_components.setChecked(True)
-        show_components.triggered.connect(lambda checked: self.visualization.toggle_view('components', checked))
+        show_components.triggered.connect(lambda checked: self._on_view_toggle('components', checked))
 
         show_decision = view_menu.addAction('Show Decision Attribution')
         show_decision.setCheckable(True)
         show_decision.setChecked(True)
-        show_decision.triggered.connect(lambda checked: self.visualization.toggle_view('decision', checked))
+        show_decision.triggered.connect(lambda checked: self._on_view_toggle('decision', checked))
 
         auto_reload = view_menu.addAction('Auto Reload (Dev)')
         auto_reload.setCheckable(True)
         auto_reload.setChecked(True)
-        auto_reload.triggered.connect(lambda checked: setattr(self, 'auto_reload_enabled', checked))
+        auto_reload.triggered.connect(self._on_auto_reload_toggled)
+
+        study_menu = menubar.addMenu('Study')
+        study_actions = [
+            ('Task Start', 'task_start'),
+            ('Task End', 'task_end'),
+            ('Question Start', 'question_start'),
+            ('Question End', 'question_end'),
+            ('Answer Submit', 'answer_submit'),
+            ('Think Aloud Start', 'think_aloud_start'),
+            ('Think Aloud End', 'think_aloud_end'),
+        ]
+        for label, marker_event in study_actions:
+            action = study_menu.addAction(label)
+            action.triggered.connect(lambda _checked=False, event_name=marker_event: self._log_study_marker(event_name))
 
 
 
@@ -550,6 +690,8 @@ class MainWindow(QMainWindow):
 
         print(f"\n📊 Loading CSV: {log_file}")
         print(f"🎬 Loading Video: {video_file}\n")
+        source = "system_init" if self._loading_phase else "user_input"
+        self.logger.set_episode(os.path.basename(log_file), source=source)
 
         if not self.data_manager.load_data(log_file):
             print(f"Failed to load data from {log_file}")
@@ -557,6 +699,49 @@ class MainWindow(QMainWindow):
     
         # Load event data
         self.data_manager.load_data(log_file)
+
+        total_steps = len(self.data_manager.time_steps)
+        reward_values = [float(v) for v in self.data_manager.reward_log]
+        positive_count = sum(1 for v in reward_values if v > 0)
+        negative_count = sum(1 for v in reward_values if v < 0)
+        reward_total = float(sum(reward_values)) if reward_values else 0.0
+
+        ppo_values = self.data_manager.get_ppo_entropy_norm()
+        dreamer_values = self.data_manager.get_dreamer_explore_norm()
+        if len(ppo_values) == total_steps and np.any(ppo_values):
+            algorithm_hint = "ppo"
+        elif len(dreamer_values) == total_steps and np.any(dreamer_values):
+            algorithm_hint = "dreamer"
+        else:
+            algorithm_hint = "unknown"
+
+        component_summary = {}
+        for name, values in self.data_manager.reward_components.items():
+            numeric = [float(v) for v in values]
+            if not numeric:
+                continue
+            component_summary[name] = {
+                "mean": round(float(sum(numeric) / len(numeric)), 4),
+                "max": round(float(max(numeric)), 4),
+                "min": round(float(min(numeric)), 4),
+                "non_zero_count": int(sum(1 for v in numeric if abs(v) > 1e-9)),
+            }
+
+        self.logger.log(
+            "episode_context",
+            {
+                "target_id": "episode_context",
+                "interaction_type": "episode_snapshot",
+                "episode_id": os.path.basename(log_file),
+                "total_steps": int(total_steps),
+                "reward_total": round(reward_total, 4),
+                "positive_reward_count": int(positive_count),
+                "negative_reward_count": int(negative_count),
+                "algorithm_hint": algorithm_hint,
+                "component_summary": component_summary,
+                "source": source,
+            },
+        )
         
                 
         # Pass data to visualization
@@ -569,7 +754,9 @@ class MainWindow(QMainWindow):
 
         # Build / refresh the decision-attribution comparison plot
         self.visualization.rebuild_decision_plot()
-        self._mount_bottom_panel()
+        if hasattr(self.visualization, "decision_plot") and self.visualization.decision_plot is not None:
+            self.logger.attach_visibility_tag("decision_plot", self.visualization.decision_plot)
+        self._mount_right_bottom_panel()
 
         
         # Pass video to player
@@ -589,24 +776,71 @@ class MainWindow(QMainWindow):
         # Update window title
         self.setWindowTitle(f"Crafter Analysis - {os.path.basename(log_file)}")
 
+    def focusInEvent(self, event):
+        self.logger.log(
+            "window_focus_gained",
+            {
+                "target_id": "main_window",
+                "interaction_type": "focus_in",
+                "source": "user_input",
+            },
+        )
+        super().focusInEvent(event)
+
+    def focusOutEvent(self, event):
+        self.logger.log(
+            "window_focus_lost",
+            {
+                "target_id": "main_window",
+                "interaction_type": "focus_out",
+                "source": "user_input",
+            },
+        )
+        super().focusOutEvent(event)
+
+    def resizeEvent(self, event):
+        if self.logger.should_emit("layout_resize", 0.25):
+            size = event.size()
+            layout_state = dict(self.logger.ui_state.get("layout", {}))
+            layout_state["window_size"] = {
+                "width": int(size.width()),
+                "height": int(size.height()),
+            }
+            self.logger.update_ui_state(layout=layout_state)
+            self.logger.log(
+                "layout_change",
+                {
+                    "target_id": "main_window",
+                    "interaction_type": "window_resize",
+                    "width": int(size.width()),
+                    "height": int(size.height()),
+                    "source": "user_input" if not self._loading_phase else "system_init",
+                },
+            )
+        super().resizeEvent(event)
+
     def _mount_bottom_panel(self):
-        """Show decision plot in Charts mode or explanation toolbox in Achievements mode."""
-        while self.decision_layout.count():
-            item = self.decision_layout.takeAt(0)
+        """Backward-compatible wrapper for old call sites."""
+        self._mount_right_bottom_panel()
+
+    def _mount_right_bottom_panel(self):
+        """Charts mode shows decision plot; achievements mode keeps this area empty."""
+        while self.bottom_right_layout.count():
+            item = self.bottom_right_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.setParent(None)
 
         if self.showing_info_panel:
-            self.decision_layout.addWidget(self.explanation_panel)
-            self.explanation_panel.setVisible(True)
-            if hasattr(self.visualization, 'decision_plot'):
-                self.visualization.decision_plot.setVisible(False)
+            self.bottom_right_layout.addWidget(self.empty_bottom_panel)
+            self.empty_bottom_panel.setVisible(True)
             return
 
         if hasattr(self.visualization, 'decision_plot'):
-            self.decision_layout.addWidget(self.visualization.decision_plot)
+            self.bottom_right_layout.addWidget(self.visualization.decision_plot)
             self.visualization.decision_plot.setVisible(True)
+        else:
+            self.bottom_right_layout.addWidget(self.empty_bottom_panel)
     
     def on_timeline_position_changed(self, position):
         """Handle timeline position changes (0-100%)"""
@@ -624,6 +858,20 @@ class MainWindow(QMainWindow):
 
         self.info_panel.update_state(step)
         self.explanation_panel.update_step(step)
+
+        self.logger.set_frame(frame, step)
+        if self.logger.should_emit("navigation_event", 0.20):
+            self.logger.log(
+                "navigation_event",
+                {
+                    "target_id": "timeline_sync",
+                    "interaction_type": "timeline_move",
+                    "position_percent": round(position, 2),
+                    "frame": int(frame),
+                    "step": int(step),
+                    "source": "system_sync",
+                },
+            )
     
         # Define an offset for synchronization 
         self.frame_offset = 1
@@ -650,6 +898,22 @@ class MainWindow(QMainWindow):
 
         self.info_panel.update_state(step)
         self.explanation_panel.update_step(step)
+        self.logger.set_frame(frame, step)
+        if self.logger.should_emit("frame_changed", 0.15):
+            self.logger.log(
+                "frame_changed",
+                {
+                    "target_id": "video_frame",
+                    "interaction_type": "playback_tick",
+                    "frame": int(frame),
+                    "step": int(step),
+                    "source": "system_sync",
+                },
+            )
+
+    def closeEvent(self, event):
+        self.logger.close()
+        super().closeEvent(event)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
