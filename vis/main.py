@@ -15,8 +15,29 @@ from .widgets import VisualizationWidget, InfoPanel, ExplanationPanel
 from .data_manager import DataManager
 from .timeline import TimelineController
 from .config import DEFAULT_LOG_DIR, RESULTS_LOG_DIR, VIZ_COLORS, DEFAULT_FPS
-from .study_logger import StudyLogger
+from .study_logger import StudyLogger, NoOpStudyLogger
 import random
+
+
+def _study_logging_enabled_from_runtime() -> bool:
+    env_value = os.getenv("VIS_STUDY_LOGGING", "").strip().lower()
+    if env_value:
+        return env_value in {"1", "true", "yes", "on", "y"}
+
+    if "--study-logging" in sys.argv:
+        return True
+    if "--no-study-logging" in sys.argv:
+        return False
+
+    if not sys.stdin or not sys.stdin.isatty():
+        return False
+
+    try:
+        answer = input("Enable study logging? (y/n) [n]: ").strip().lower()
+    except EOFError:
+        return False
+
+    return answer in {"y", "yes"}
 
 class MainWindow(QMainWindow):
     """Main application window containing video player and visualization panels"""
@@ -27,12 +48,20 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Crafter Analysis Tool")
         self.setGeometry(100, 100, 1200, 800)
 
-        participant_id, ok = QInputDialog.getText(
-            self,
-            "Study Session",
-            "Enter participant ID:",
-        )
-        self.logger = StudyLogger(participant_id=participant_id.strip() if ok and participant_id else None)
+        self.study_logging_enabled = _study_logging_enabled_from_runtime()
+        if self.study_logging_enabled:
+            participant_id, ok = QInputDialog.getText(
+                self,
+                "Study Session",
+                "Enter participant ID:",
+            )
+            self.logger = StudyLogger(participant_id=participant_id.strip() if ok and participant_id else None)
+            print("Study logging enabled")
+            print(f"Session log: {self.logger.log_path}")
+        else:
+            self.logger = NoOpStudyLogger()
+            print("Study logging disabled")
+            print("Enable with --study-logging, VIS_STUDY_LOGGING=1, or answer y at startup")
         self.logger.update_ui_state(theme="light", panel="plots")
         self._loading_phase = True
 

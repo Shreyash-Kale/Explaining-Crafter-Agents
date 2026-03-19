@@ -12,6 +12,111 @@ from PyQt5.QtGui import QColor, QPainter, QFont, QBrush, QPicture, QIcon, QCurso
 import pyqtgraph as pg
 from PyQt5.QtGui import QColor
 from .explainer import generate_explanation
+from .config import VIZ_COLORS
+
+
+AGENT_ATTRIBUTE_ORDER = ["health", "food", "drink", "water", "energy"]
+DECISION_COMPONENT_ORDER = [
+    "value_estimate",
+    "action_probability",
+    "exploration_bonus",
+    "world_model_score",
+    "step_reward",
+    "ppo_entropy",
+    "ppo_advantage",
+    "entropy",
+    "advantage",
+]
+RESOURCE_PRIORITY_ORDER = [
+    "wood", "stone", "coal", "iron", "diamond", "sapling", "plant", "table", "furnace",
+]
+
+RESOURCE_HUE_MAP = {
+    "wood": "#8C6A4A",
+    "stone": "#6F7885",
+    "coal": "#4F5663",
+    "iron": "#8A808E",
+    "diamond": "#4E7F86",
+    "sapling": "#6C8A5E",
+    "plant": "#7C9865",
+    "table": "#9A7D5C",
+    "furnace": "#6B707A",
+}
+RESOURCE_FALLBACK_HUES = [
+    "#7D6A58", "#6B7D69", "#7F6C80", "#667B83", "#8A7758", "#6A7285",
+]
+
+DECISION_HUE_MAP = {
+    "value_estimate": "#6D4FA3",      # deep violet
+    "action_probability": "#A35C77",   # dusty rose
+    "exploration_bonus": "#8D6B3F",    # amber-brown
+    "world_model_score": "#4A6F8D",    # slate blue
+    "step_reward": "#6E7E54",          # muted olive
+    "ppo_entropy": "#5D5C99",
+    "ppo_advantage": "#9B5F8B",
+    "entropy": "#5D5C99",
+    "advantage": "#9B5F8B",
+}
+DECISION_FALLBACK_HUES = [
+    "#6A63A1", "#9A5F8A", "#857039", "#4E6F88", "#6D7F55",
+]
+
+
+def _norm_component_key(name):
+    return str(name).strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _canonical_agent_key(name):
+    key = _norm_component_key(name)
+    if key == "water":
+        return "drink"
+    return key
+
+
+def _component_group(name):
+    key = _norm_component_key(name)
+    if _canonical_agent_key(key) in {"health", "food", "drink", "energy"}:
+        return "agent"
+    if key in set(DECISION_COMPONENT_ORDER):
+        return "decision"
+    return "resource"
+
+
+def _hex_to_rgb_tuple(color_hex):
+    qcolor = QColor(color_hex)
+    return (qcolor.red(), qcolor.green(), qcolor.blue())
+
+
+def _resource_color_hex(name, idx):
+    key = _norm_component_key(name)
+    if key.startswith("collect_"):
+        key = key.replace("collect_", "", 1)
+    if key in RESOURCE_HUE_MAP:
+        return RESOURCE_HUE_MAP[key]
+    return RESOURCE_FALLBACK_HUES[idx % len(RESOURCE_FALLBACK_HUES)]
+
+
+def _decision_color_hex(name, idx):
+    key = _norm_component_key(name)
+    if key in DECISION_HUE_MAP:
+        return DECISION_HUE_MAP[key]
+    return DECISION_FALLBACK_HUES[idx % len(DECISION_FALLBACK_HUES)]
+
+
+def _decision_line_style(name):
+    key = _norm_component_key(name)
+    style_map = {
+        "value_estimate": Qt.SolidLine,
+        "action_probability": Qt.DashLine,
+        "exploration_bonus": Qt.DotLine,
+        "world_model_score": Qt.DashDotLine,
+        "step_reward": Qt.SolidLine,
+        "ppo_entropy": Qt.DotLine,
+        "ppo_advantage": Qt.DashDotLine,
+        "entropy": Qt.DotLine,
+        "advantage": Qt.DashDotLine,
+    }
+    return style_map.get(key, Qt.SolidLine)
 
 
 class InfoPanel(QFrame):
@@ -680,12 +785,20 @@ class DecisionAttribPlot(QWidget):
         row = LegendToggleRow(name, color_hex, _toggle)
         self._legend_vbox.insertWidget(self._legend_vbox.count() - 1, row)
 
+    def _add_legend_section(self, section_name):
+        label = QLabel(section_name)
+        label.setStyleSheet(
+            "font-size: 10px; font-weight: 700; color: #4e4e4e; "
+            "margin-top: 6px; margin-bottom: 2px;"
+        )
+        self._legend_vbox.insertWidget(self._legend_vbox.count() - 1, label)
+
     def _build_plot(self):
         x = np.arange(len(self.dm.time_steps))
 
         curves = [
-            ("Value estimate", self.dm.get_value_norm(), '#9467bd', pg.mkPen('#9467bd', width=2)),
-            ("Action probability", self.dm.get_action_prob_norm(), '#8c564b', pg.mkPen('#8c564b', width=2, style=Qt.DashLine)),
+            ("Value estimate", "value_estimate", self.dm.get_value_norm()),
+            ("Action probability", "action_probability", self.dm.get_action_prob_norm()),
         ]
 
         ppo_ok = (len(self.dm.get_ppo_entropy_norm()) == len(x) and np.any(self.dm.get_ppo_entropy_norm()))
@@ -693,17 +806,23 @@ class DecisionAttribPlot(QWidget):
 
         if ppo_ok:
             curves += [
-                ("PPO entropy", self.dm.get_ppo_entropy_norm(), '#1f77b4', pg.mkPen('#1f77b4', width=2)),
-                ("PPO advantage", self.dm.get_ppo_advantage_norm(), '#d62728', pg.mkPen('#d62728', width=2, style=Qt.DashLine)),
+                ("PPO entropy", "ppo_entropy", self.dm.get_ppo_entropy_norm()),
+                ("PPO advantage", "ppo_advantage", self.dm.get_ppo_advantage_norm()),
             ]
         elif dr_ok:
             curves += [
-                ("Exploration bonus", self.dm.get_dreamer_explore_norm(), '#ff7f0e', pg.mkPen('#ff7f0e', width=2)),
-                ("World-model score", self.dm.get_dreamer_wm_score_norm(), '#2ca02c', pg.mkPen('#2ca02c', width=2, style=Qt.DashLine)),
+                ("Exploration bonus", "exploration_bonus", self.dm.get_dreamer_explore_norm()),
+                ("World-model score", "world_model_score", self.dm.get_dreamer_wm_score_norm()),
             ]
 
-        for name, y, color_hex, pen in curves:
+        self._add_legend_section("Decision Attribution Points")
+        decision_color_idx = 0
+
+        for name, key, y in curves:
             if len(y) == len(x) and np.any(y):
+                color_hex = _decision_color_hex(key, decision_color_idx)
+                decision_color_idx += 1
+                pen = pg.mkPen(color_hex, width=2.4, style=_decision_line_style(key))
                 smooth_y = self._smooth_series(y)
                 curve = self.plot.plot(x, smooth_y, pen=pen, name=None)
                 self.curves[name] = curve
@@ -928,9 +1047,10 @@ class DecisionAttribPlot(QWidget):
         self.hover_text = pg.TextItem(
             html=tooltip_html,
             anchor=(0, 0),
-            border=pg.mkPen((50, 50, 50, 100), width=1),
-            fill=pg.mkBrush(255, 255, 255, 235)
+            border=pg.mkPen((35, 35, 35, 180), width=1.4),
+            fill=pg.mkBrush(255, 255, 255, 252)
         )
+        self.hover_text.setZValue(500)
         self.plot.addItem(self.hover_text, ignoreBounds=True)
         self._place_tooltip(self.hover_text, closest_idx, point_y)
 
@@ -939,6 +1059,7 @@ class DecisionAttribPlot(QWidget):
             angle=90,
             pen=pg.mkPen(color=(100, 100, 100), width=1, style=Qt.DotLine)
         )
+        self.hover_line.setZValue(480)
         self.plot.addItem(self.hover_line, ignoreBounds=True)
 
     def on_plot_clicked(self, mouse_event):
@@ -1513,17 +1634,15 @@ class VisualizationWidget(QWidget):
         
         # Clear timeline legend rows (preserve title + stretch).
         if hasattr(self, '_cum_legend_vbox'):
-            # Keep: title (0), hint (1), stretch (last)
-            while self._cum_legend_vbox.count() > 3:
-                item = self._cum_legend_vbox.takeAt(2)
+            while self._cum_legend_vbox.count() > 2:
+                item = self._cum_legend_vbox.takeAt(1)
                 if item.widget():
                     item.widget().deleteLater()
 
         # Clear the external legend panel (remove all label widgets except title + stretch).
         if hasattr(self, '_comp_legend_vbox'):
-            # Keep: title (0), hint (1), stretch (last)
-            while self._comp_legend_vbox.count() > 3:
-                item = self._comp_legend_vbox.takeAt(2)
+            while self._comp_legend_vbox.count() > 2:
+                item = self._comp_legend_vbox.takeAt(1)
                 if item.widget():
                     item.widget().deleteLater()
         
@@ -1691,21 +1810,6 @@ class VisualizationWidget(QWidget):
         if not self.time_steps or not self.reward_components:
             return
 
-        # Perceptually distinct palette; larger-amplitude components drawn first
-        # (background) so smaller ones remain readable on top.
-        colors = [
-            (220,  55,  55),   # Red
-            ( 30, 160,  90),   # Green
-            ( 50, 115, 240),   # Blue
-            (240, 165,   0),   # Amber
-            (170,   0, 210),   # Purple
-            (  0, 185, 185),   # Cyan
-            (240, 110,   0),   # Orange
-            (130,  50, 230),   # Violet
-            (  0, 140, 120),   # Teal
-            (190,  30,  90),   # Crimson
-        ]
-
         self.component_curves = {}
         self.component_display_order = []
 
@@ -1715,29 +1819,94 @@ class VisualizationWidget(QWidget):
         if not active:
             return
 
-        # Draw largest-amplitude component first so it sits in the background.
-        sorted_components = sorted(
-            active.items(),
-            key=lambda kv: max(abs(min(kv[1])), abs(max(kv[1]))),
-            reverse=True,
+        norm_to_name = {}
+        for name in active.keys():
+            norm_to_name.setdefault(_norm_component_key(name), name)
+
+        ordered_agent = []
+        for key in AGENT_ATTRIBUTE_ORDER:
+            norm_key = _norm_component_key(key)
+            if norm_key in norm_to_name and norm_to_name[norm_key] not in ordered_agent:
+                ordered_agent.append(norm_to_name[norm_key])
+
+        ordered_decision = []
+        for key in DECISION_COMPONENT_ORDER:
+            if key in norm_to_name and norm_to_name[key] not in ordered_decision:
+                ordered_decision.append(norm_to_name[key])
+
+        resource_names = [
+            name for name in active.keys()
+            if name not in ordered_agent and name not in ordered_decision
+        ]
+        resource_priority = {name: idx for idx, name in enumerate(RESOURCE_PRIORITY_ORDER)}
+        ordered_resources = sorted(
+            resource_names,
+            key=lambda name: (resource_priority.get(_norm_component_key(name), 999), _norm_component_key(name)),
         )
+
+        sorted_component_names = ordered_agent + ordered_resources + ordered_decision
 
         x = np.array(self.time_steps)
 
-        for idx, (name, values) in enumerate(sorted_components):
-            r, g, b = colors[idx % len(colors)]
+        resource_color_idx = 0
+        decision_color_idx = 0
+        last_group = None
+        section_titles = {
+            "agent": "Agent Attributes",
+            "resource": "Resources",
+            "decision": "Decision Attribution Points",
+        }
+
+        for name in sorted_component_names:
+            values = active[name]
+            group = _component_group(name)
+
+            if group == "agent":
+                canonical = _canonical_agent_key(name)
+                color_hex = VIZ_COLORS.get(canonical, "#808080")
+            elif group == "decision":
+                color_hex = _decision_color_hex(name, decision_color_idx)
+                decision_color_idx += 1
+            else:
+                color_hex = _resource_color_hex(name, resource_color_idx)
+                resource_color_idx += 1
+
+            r, g, b = _hex_to_rgb_tuple(color_hex)
             y = np.array(values, dtype=float)
             self.component_display_order.append(name)
+            non_zero_count = int(np.count_nonzero(y))
+            sparse_series = non_zero_count <= max(3, int(len(y) * 0.12))
 
             # Each component fills from y=0 to its own value (non-stacked).
             # fillLevel=0 handles both positive and negative values correctly.
+            if group == "agent":
+                pen_style = Qt.SolidLine
+                pen_width = 2.2
+                fill_alpha = 48
+                z_value = 10
+            elif group == "decision":
+                pen_style = _decision_line_style(name)
+                pen_width = 2.6
+                fill_alpha = 10
+                z_value = 20
+            else:
+                pen_style = Qt.SolidLine
+                pen_width = 2.4
+                fill_alpha = 0 if sparse_series else 22
+                z_value = 30
+
             curve = self.components_plot.plot(
                 x, y,
-                pen=pg.mkPen(color=(r, g, b), width=2),
+                pen=pg.mkPen(color=(r, g, b), width=pen_width, style=pen_style),
                 fillLevel=0.0,
-                brush=pg.mkBrush(r, g, b, 45),
+                brush=pg.mkBrush(r, g, b, fill_alpha),
+                symbol='o' if (group == "resource" and sparse_series) else None,
+                symbolSize=4 if (group == "resource" and sparse_series) else None,
+                symbolBrush=pg.mkBrush(r, g, b, 170) if (group == "resource" and sparse_series) else None,
+                symbolPen=pg.mkPen(color=(r, g, b), width=1) if (group == "resource" and sparse_series) else None,
                 name=name,
             )
+            curve.setZValue(z_value)
 
             self.component_curves[name] = {
                 'curve': curve,
@@ -1747,10 +1916,19 @@ class VisualizationWidget(QWidget):
 
             # Add a row to the external legend panel.
             if hasattr(self, '_comp_legend_vbox'):
+                if group != last_group:
+                    section = QLabel(section_titles.get(group, "Other"))
+                    section.setStyleSheet(
+                        "font-size: 10px; font-weight: 700; color: #4e4e4e; "
+                        "margin-top: 6px; margin-bottom: 2px;"
+                    )
+                    self._comp_legend_vbox.insertWidget(self._comp_legend_vbox.count() - 1, section)
+                    last_group = group
+
                 self._add_toggle_legend_row(
                     self._comp_legend_vbox,
                     name.replace('_', ' '),
-                    f"rgb({r},{g},{b})",
+                    color_hex,
                     lambda visible, item=curve: item.setVisible(visible)
                 )
 
@@ -1880,9 +2058,10 @@ class VisualizationWidget(QWidget):
         self.hover_text = pg.TextItem(
             html=tooltip_html,
             anchor=(0, 0),
-            border=pg.mkPen((50, 50, 50, 100), width=1),
-            fill=pg.mkBrush(255, 255, 255, 235)
+            border=pg.mkPen((35, 35, 35, 180), width=1.4),
+            fill=pg.mkBrush(255, 255, 255, 252)
         )
+        self.hover_text.setZValue(500)
         self.cumulative_plot.addItem(self.hover_text, ignoreBounds=True)
 
         self._place_plot_tooltip(self.cumulative_plot, self.hover_text, closest_time, closest_reward)
@@ -1893,6 +2072,7 @@ class VisualizationWidget(QWidget):
             size=12, pen=(200, 200, 200), brush=(255, 255, 0, 200),
             symbol='o'
         )
+        self.highlight_point.setZValue(490)
         self.cumulative_plot.addItem(self.highlight_point, ignoreBounds=True)
         self._emit_interaction(
             "plot_hover",
@@ -1982,9 +2162,10 @@ class VisualizationWidget(QWidget):
         self.components_hover_text = pg.TextItem(
             html=tooltip_html,
             anchor=(0, 0),
-            border=pg.mkPen((50, 50, 50, 100), width=1),
-            fill=pg.mkBrush(255, 255, 255, 235)
+            border=pg.mkPen((35, 35, 35, 180), width=1.4),
+            fill=pg.mkBrush(255, 255, 255, 252)
         )
+        self.components_hover_text.setZValue(500)
 
         # Add first so boundingRect is measurable for data-space clamping.
         self.components_plot.addItem(self.components_hover_text, ignoreBounds=True)
@@ -1998,6 +2179,7 @@ class VisualizationWidget(QWidget):
             angle=90,
             pen=pg.mkPen(color=(100, 100, 100), width=1, style=Qt.DotLine)
         )
+        self.hover_line.setZValue(480)
         self.components_plot.addItem(self.hover_line, ignoreBounds=True)
         self._emit_interaction(
             "plot_hover",

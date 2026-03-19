@@ -341,3 +341,57 @@ class StudyLogger:
         self.log("session_end", {"total_elapsed_s": round(time.time() - self.wall_start, 3)})
         self._file.flush()
         self._file.close()
+
+
+class NoOpStudyLogger:
+    """Drop-in logger that performs no persistence when study logging is disabled."""
+
+    def __init__(self):
+        self.participant_id = "disabled"
+        self.session_id = "disabled"
+        self.episode_id = ""
+        self.current_frame = 0
+        self.current_step = 0
+        self.ui_state: Dict[str, Any] = {
+            "panel": "plots",
+            "theme": "light",
+            "playback_speed": 1.0,
+            "active_tab": "completed",
+            "filters": {},
+            "navigation": {},
+            "viewport": {},
+            "layout": {},
+        }
+
+    def set_episode(self, episode_id: str, source: str = "system_init"):
+        self.episode_id = episode_id or ""
+
+    def set_frame(self, frame: int, step: int):
+        self.current_frame = int(max(0, frame))
+        self.current_step = int(max(0, step))
+
+    def update_ui_state(self, **kwargs):
+        for key, value in kwargs.items():
+            if value is None:
+                continue
+            self.ui_state[key] = value
+
+    def set_viewport_state(self, plot_name: str, x_range: Any, y_range: Any):
+        viewport = dict(self.ui_state.get("viewport", {}))
+        viewport[plot_name] = {
+            "x_range": list(x_range) if x_range is not None else None,
+            "y_range": list(y_range) if y_range is not None else None,
+        }
+        self.ui_state["viewport"] = viewport
+
+    def should_emit(self, throttle_key: str, min_interval_s: float) -> bool:
+        return False
+
+    def attach_visibility_tag(self, tag: str, widget: Any):
+        return
+
+    def log(self, event_type: str, payload: Optional[Dict[str, Any]] = None):
+        return
+
+    def close(self):
+        return
