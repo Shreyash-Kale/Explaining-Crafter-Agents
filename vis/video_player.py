@@ -13,6 +13,7 @@ class VideoPlayerWidget(QWidget):
     
     # Signal emitted when the current frame changes
     frame_changed = pyqtSignal(int)
+    interaction_event = pyqtSignal(str, object)
     
     def __init__(self):
         super().__init__()
@@ -289,6 +290,16 @@ class VideoPlayerWidget(QWidget):
         except ValueError:
             self.playback_speed = 1.0
 
+        self.interaction_event.emit(
+            "speed_change",
+            {
+                "target_id": "video_speed",
+                "interaction_type": "menu_select",
+                "speed_text": speed_text,
+                "playback_speed": self.playback_speed,
+            },
+        )
+
         if self.playing:
             self.timer.start(self.get_timer_interval_ms())
     
@@ -304,10 +315,25 @@ class VideoPlayerWidget(QWidget):
             # Start playback
             self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPause))
             self.timer.start(self.get_timer_interval_ms())
+            self.interaction_event.emit(
+                "play_started",
+                {
+                    "target_id": "video_play_toggle",
+                    "interaction_type": "button_click",
+                    "playback_speed": self.playback_speed,
+                },
+            )
         else:
             # Pause playback
             self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
             self.timer.stop()
+            self.interaction_event.emit(
+                "play_paused",
+                {
+                    "target_id": "video_play_toggle",
+                    "interaction_type": "button_click",
+                },
+            )
 
     def restart_to_start(self):
         """Return to frame 0 and stay paused until user presses play."""
@@ -319,6 +345,15 @@ class VideoPlayerWidget(QWidget):
         self.playing = False
         self.timer.stop()
         self.play_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
+        self.interaction_event.emit(
+            "restart",
+            {
+                "target_id": "video_restart",
+                "interaction_type": "button_click",
+                "from_frame": self.current_frame,
+                "to_frame": 0,
+            },
+        )
 
         # Seek to the first frame; this emits frame_changed and syncs plots.
         self.show_frame(0)
@@ -343,6 +378,18 @@ class VideoPlayerWidget(QWidget):
         
         # Calculate new frame position
         new_frame = self.current_frame + frames
+
+        event_name = "step_forward" if frames > 0 else "step_backward"
+        self.interaction_event.emit(
+            event_name,
+            {
+                "target_id": "video_step",
+                "interaction_type": "button_click",
+                "delta_frames": int(frames),
+                "from_frame": int(self.current_frame),
+                "to_frame": int(max(0, min(new_frame, self.total_frames - 1))),
+            },
+        )
         
         # Show the frame
         self.show_frame(new_frame)

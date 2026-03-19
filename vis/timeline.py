@@ -10,6 +10,7 @@ class TimelineController(QWidget):
     
     # Signal emitted when position changes
     position_changed = pyqtSignal(float)  # 0-100 percentage
+    interaction_event = pyqtSignal(str, object)
     
     def __init__(self):
         super().__init__()
@@ -21,6 +22,8 @@ class TimelineController(QWidget):
         self.total_steps = 0
         self.total_frames = 0
         self.frame_step_ratio = 1.0
+        self._is_dragging = False
+        self._drag_start_value = 0
     
     def init_ui(self):
         """Initialize the UI components"""
@@ -34,6 +37,8 @@ class TimelineController(QWidget):
         self.position_slider.setRange(0, 1000)  # Use 0-1000 for more precision
         self.position_slider.setValue(0)
         self.position_slider.valueChanged.connect(self.on_slider_value_changed)
+        self.position_slider.sliderPressed.connect(self.on_slider_pressed)
+        self.position_slider.sliderReleased.connect(self.on_slider_released)
         layout.addWidget(self.position_slider)
 
         # Step counter – primary timeline unit.
@@ -89,9 +94,75 @@ class TimelineController(QWidget):
         
         # Update label
         self.position_label.setText(f"{position:.1f}%")
+
+        if self._is_dragging:
+            self.interaction_event.emit(
+                "slider_scrub",
+                {
+                    "target_id": "timeline_slider",
+                    "interaction_type": "drag",
+                    "slider_value": int(value),
+                    "position_percent": round(position, 2),
+                },
+            )
         
         # Emit signal
         self.position_changed.emit(position)
+
+    def on_slider_pressed(self):
+        self._is_dragging = True
+        self._drag_start_value = int(self.position_slider.value())
+        self.interaction_event.emit(
+            "slider_scrub_start",
+            {
+                "target_id": "timeline_slider",
+                "interaction_type": "press",
+                "slider_value": self._drag_start_value,
+            },
+        )
+
+    def on_slider_released(self):
+        value = int(self.position_slider.value())
+        position = value / 10.0
+        delta = value - int(self._drag_start_value)
+        abs_delta = abs(delta)
+
+        if abs_delta <= 5:
+            scrub_intent = "micro_adjust"
+        elif value >= 995 and delta > 0:
+            scrub_intent = "jump_to_end"
+        elif value <= 5 and delta < 0:
+            scrub_intent = "jump_to_start"
+        elif delta > 0:
+            scrub_intent = "seek_forward"
+        else:
+            scrub_intent = "seek_backward"
+
+        self._is_dragging = False
+        self.interaction_event.emit(
+            "slider_scrub_end",
+            {
+                "target_id": "timeline_slider",
+                "interaction_type": "release",
+                "slider_value": value,
+                "position_percent": round(position, 2),
+                "delta_slider_value": int(delta),
+                "delta_percent": round(delta / 10.0, 2),
+                "scrub_intent": scrub_intent,
+            },
+        )
+        self.interaction_event.emit(
+            "slider_jump",
+            {
+                "target_id": "timeline_slider",
+                "interaction_type": "jump",
+                "slider_value": value,
+                "position_percent": round(position, 2),
+                "delta_slider_value": int(delta),
+                "delta_percent": round(delta / 10.0, 2),
+                "scrub_intent": scrub_intent,
+            },
+        )
     
     def frame_to_step(self, frame, offset=0):
         """Convert a frame number to a step index with offset"""

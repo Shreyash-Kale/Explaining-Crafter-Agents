@@ -1,12 +1,13 @@
 # Vis.py - Updated with improved colors, cleaner annotations, and better styling
 
+import time
 import numpy as np
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
                            QGraphicsDropShadowEffect, QSizePolicy, QGridLayout, QPushButton, 
                            QTabWidget, QListWidget, QStyle, QFrame, QGraphicsDropShadowEffect, QListWidgetItem,
                            QScrollArea,
                            QToolTip)
-from PyQt5.QtCore import Qt, pyqtSlot, QRectF, QEvent
+from PyQt5.QtCore import Qt, pyqtSlot, QRectF, QEvent, pyqtSignal
 from PyQt5.QtGui import QColor, QPainter, QFont, QBrush, QPicture, QIcon, QCursor
 import pyqtgraph as pg
 from PyQt5.QtGui import QColor
@@ -15,6 +16,8 @@ from .explainer import generate_explanation
 
 class InfoPanel(QFrame):
     """Panel that displays achievement information in two tabs"""
+    interaction_event = pyqtSignal(str, object)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         # Set up styling
@@ -151,6 +154,40 @@ class InfoPanel(QFrame):
         
         # Initialize achievement lists
         self.initialize_achievements()
+        self.achievements_tabs.currentChanged.connect(self._on_tab_changed)
+        self.completed_list.itemClicked.connect(
+            lambda item: self._on_achievement_clicked(item, "completed")
+        )
+        self.available_list.itemClicked.connect(
+            lambda item: self._on_achievement_clicked(item, "available")
+        )
+
+    def _on_tab_changed(self, idx):
+        tab_name = "completed" if idx == 0 else "available"
+        self.interaction_event.emit(
+            "tab_switch",
+            {
+                "target_id": "achievements_tabs",
+                "interaction_type": "tab_change",
+                "tab": tab_name,
+                "tab_index": int(idx),
+            },
+        )
+
+    def _on_achievement_clicked(self, item, list_name):
+        if item is None:
+            return
+        achievement_id = item.data(Qt.UserRole)
+        self.interaction_event.emit(
+            "achievement_clicked",
+            {
+                "target_id": "achievement_item",
+                "interaction_type": "list_select",
+                "list_name": list_name,
+                "achievement_id": achievement_id,
+                "text": item.text(),
+            },
+        )
     
     def initialize_achievements(self):
         """Initialize the achievement lists - all start in available tab"""
@@ -548,14 +585,19 @@ class LegendToggleRow(QFrame):
 class DecisionAttribPlot(QWidget):
     """Decision attribution plot with external right-side legend panel."""
 
-    def __init__(self, dm, hover_step_callback=None):
+    def __init__(self, dm, hover_step_callback=None, interaction_callback=None):
         super().__init__()
         self.dm = dm
         self.hover_step_callback = hover_step_callback
+        self.interaction_callback = interaction_callback
         self.curve_data = []
         self.hover_text = None
         self.hover_line = None
         self.smoothing_window = 7
+        self._last_hover_emit = 0.0
+        self._last_hover_step = None
+        self._hover_session_step = None
+        self._hover_session_started = None
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -570,6 +612,8 @@ class DecisionAttribPlot(QWidget):
         self.plot.getViewBox().setDefaultPadding(0.0)
         self.plot.getViewBox().setLimits(xMin=0)
         self.plot.installEventFilter(self)
+        self.plot.getViewBox().sigRangeChanged.connect(self.on_viewport_changed)
+        self.plot.scene().sigMouseClicked.connect(self.on_plot_clicked)
         root.addWidget(self.plot, 1)
 
         self._legend_inner = QWidget()
@@ -619,7 +663,21 @@ class DecisionAttribPlot(QWidget):
         return np.convolve(padded, kernel, mode='valid')
 
     def _add_legend_row(self, name, color_hex, curve):
-        row = LegendToggleRow(name, color_hex, lambda visible, item=curve: item.setVisible(visible))
+        def _toggle(visible, item=curve, curve_name=name):
+            item.setVisible(visible)
+            if self.interaction_callback is not None:
+                self.interaction_callback(
+                    "legend_toggle",
+                    {
+                        "target_id": "decision_legend",
+                        "interaction_type": "legend_toggle",
+                        "plot": "decision",
+                        "series": curve_name,
+                        "visible": bool(visible),
+                    },
+                )
+
+        row = LegendToggleRow(name, color_hex, _toggle)
         self._legend_vbox.insertWidget(self._legend_vbox.count() - 1, row)
 
     def _build_plot(self):
@@ -681,10 +739,58 @@ class DecisionAttribPlot(QWidget):
 
     def eventFilter(self, obj, event):
         if obj == self.plot and event.type() in (QEvent.Leave, QEvent.HoverLeave):
+            self._end_hover_session(reason="leave")
             self.clear_hover_items()
             if self.hover_step_callback is not None:
                 self.hover_step_callback(None, source='decision')
         return super().eventFilter(obj, event)
+
+    def _start_hover_session(self, step):
+        if self.interaction_callback is None:
+            return
+        self._hover_session_step = int(step)
+        self._hover_session_started = time.monotonic()
+        self.interaction_callback(
+            "plot_hover_start",
+            {
+                "target_id": "decision_plot",
+                "interaction_type": "hover_start",
+                "plot": "decision",
+                "step": int(step),
+            },
+        )
+
+    def _end_hover_session(self, reason="end"):
+        if self.interaction_callback is None:
+            self._hover_session_step = None
+            self._hover_session_started = None
+            return
+        if self._hover_session_step is None or self._hover_session_started is None:
+            return
+
+        duration_ms = int((time.monotonic() - self._hover_session_started) * 1000)
+        self.interaction_callback(
+            "plot_hover_end",
+            {
+                "target_id": "decision_plot",
+                "interaction_type": "hover_end",
+                "plot": "decision",
+                "step": int(self._hover_session_step),
+                "duration_ms": int(max(0, duration_ms)),
+                "reason": reason,
+            },
+        )
+        self._hover_session_step = None
+        self._hover_session_started = None
+
+    def _update_hover_session(self, step):
+        step = int(step)
+        if self._hover_session_step is None:
+            self._start_hover_session(step)
+            return
+        if self._hover_session_step != step:
+            self._end_hover_session(reason="step_change")
+            self._start_hover_session(step)
 
     def clear_hover_items(self):
         if self.hover_text is not None:
@@ -755,12 +861,14 @@ class DecisionAttribPlot(QWidget):
         self.clear_hover_items()
 
         if not self.curve_data:
+            self._end_hover_session(reason="no_data")
             if self.hover_step_callback is not None:
                 self.hover_step_callback(None, source='decision')
             return
 
         pos = event[0]
         if not self.plot.sceneBoundingRect().contains(pos):
+            self._end_hover_session(reason="outside_plot")
             if self.hover_step_callback is not None:
                 self.hover_step_callback(None, source='decision')
             return
@@ -772,12 +880,32 @@ class DecisionAttribPlot(QWidget):
 
         closest_idx = int(np.argmin(np.abs(np.arange(len(self.dm.time_steps)) - x)))
         if abs(closest_idx - x) > max(1, len(self.dm.time_steps) * 0.02):
+            self._end_hover_session(reason="off_point")
             if self.hover_step_callback is not None:
                 self.hover_step_callback(None, source='decision')
             return
 
+        self._update_hover_session(closest_idx)
         if self.hover_step_callback is not None:
             self.hover_step_callback(closest_idx, source='decision')
+
+        if self.interaction_callback is not None:
+            now = time.monotonic()
+            if (
+                self._last_hover_step != int(closest_idx)
+                or (now - self._last_hover_emit) >= 0.20
+            ):
+                self._last_hover_step = int(closest_idx)
+                self._last_hover_emit = now
+                self.interaction_callback(
+                    "plot_hover",
+                    {
+                        "target_id": "decision_plot",
+                        "interaction_type": "hover",
+                        "plot": "decision",
+                        "step": int(closest_idx),
+                    },
+                )
 
         time_step = self.dm.time_steps[closest_idx] if closest_idx < len(self.dm.time_steps) else closest_idx
         visible_curves = [curve for curve in self.curve_data if curve['curve'].isVisible()]
@@ -813,10 +941,47 @@ class DecisionAttribPlot(QWidget):
         )
         self.plot.addItem(self.hover_line, ignoreBounds=True)
 
+    def on_plot_clicked(self, mouse_event):
+        if not self.dm.time_steps:
+            return
+        pos = mouse_event.scenePos()
+        if not self.plot.sceneBoundingRect().contains(pos):
+            return
+        mouse_point = self.plot.getViewBox().mapSceneToView(pos)
+        x = mouse_point.x()
+        closest_idx = int(np.argmin(np.abs(np.arange(len(self.dm.time_steps)) - x)))
+        if self.interaction_callback is not None:
+            self.interaction_callback(
+                "plot_click",
+                {
+                    "target_id": "decision_plot",
+                    "interaction_type": "click",
+                    "plot": "decision",
+                    "step": int(closest_idx),
+                    "button": int(mouse_event.button()),
+                },
+            )
+
+    def on_viewport_changed(self, _view_box, view_range):
+        if self.interaction_callback is None:
+            return
+        x_range, y_range = view_range
+        self.interaction_callback(
+            "plot_viewport_changed",
+            {
+                "target_id": "decision_plot",
+                "interaction_type": "zoom_pan",
+                "plot": "decision",
+                "x_range": [float(x_range[0]), float(x_range[1])],
+                "y_range": [float(y_range[0]), float(y_range[1])],
+            },
+        )
+
 
 
 class VisualizationWidget(QWidget):
     """Widget for displaying interactive visualizations of agent data"""
+    interaction_event = pyqtSignal(str, object)
     
     def __init__(self, data_manager):
         super().__init__()
@@ -856,9 +1021,36 @@ class VisualizationWidget(QWidget):
         self.highlight_point = None
         self.hover_line = None
         self.component_display_order = []
+        self._last_interaction_emit = {}
+        self._plot_hover_sessions = {
+            "cumulative": {"step": None, "started": None},
+            "components": {"step": None, "started": None},
+        }
+
+    def _emit_interaction(self, event_type, payload, throttle_ms=None, throttle_key=None):
+        key = throttle_key or event_type
+        if throttle_ms is not None:
+            now = time.monotonic()
+            last = self._last_interaction_emit.get(key)
+            if last is not None and (now - last) * 1000.0 < float(throttle_ms):
+                return
+            self._last_interaction_emit[key] = now
+        self.interaction_event.emit(event_type, payload)
 
     def _add_toggle_legend_row(self, layout, label_text, color_css, toggle_callback):
-        row = LegendToggleRow(label_text, color_css, toggle_callback)
+        def wrapped_toggle(visible):
+            toggle_callback(visible)
+            self._emit_interaction(
+                "legend_toggle",
+                {
+                    "target_id": "plot_legend",
+                    "interaction_type": "legend_toggle",
+                    "series": label_text,
+                    "visible": bool(visible),
+                },
+            )
+
+        row = LegendToggleRow(label_text, color_css, wrapped_toggle)
         layout.insertWidget(layout.count() - 1, row)
         return row
     
@@ -868,7 +1060,11 @@ class VisualizationWidget(QWidget):
             return
         if hasattr(self, "decision_plot") and self.decision_plot is not None:
             self.decision_plot.setParent(None)
-        self.decision_plot = DecisionAttribPlot(self.data_manager, hover_step_callback=self._sync_hover_step)
+        self.decision_plot = DecisionAttribPlot(
+            self.data_manager,
+            hover_step_callback=self._sync_hover_step,
+            interaction_callback=self._emit_interaction,
+        )
 
     
     def init_ui(self):
@@ -899,6 +1095,8 @@ class VisualizationWidget(QWidget):
         self.cumulative_plot.setTitle("Agent Reward Timeline", color="#333", size="12pt")
         self.cumulative_plot.getViewBox().setDefaultPadding(0.0)
         self.cumulative_plot.getViewBox().setLimits(xMin=0)
+        self.cumulative_plot.getViewBox().sigRangeChanged.connect(self.on_cumulative_range_changed)
+        self.cumulative_plot.scene().sigMouseClicked.connect(self.on_cumulative_click)
         
         # Install event filter to clear hover items when mouse leaves plot
         self.cumulative_plot.installEventFilter(self)
@@ -960,6 +1158,8 @@ class VisualizationWidget(QWidget):
         self.components_plot.setTitle("Reward Component Breakdown", color="#333", size="12pt")
         self.components_plot.getViewBox().setDefaultPadding(0.0)
         self.components_plot.getViewBox().setLimits(xMin=0)
+        self.components_plot.getViewBox().sigRangeChanged.connect(self.on_components_range_changed)
+        self.components_plot.scene().sigMouseClicked.connect(self.on_components_click)
         
         # Install event filter to clear hover items when mouse leaves plot
         self.components_plot.installEventFilter(self)
@@ -1072,12 +1272,100 @@ class VisualizationWidget(QWidget):
         """Event filter to clear hover items when mouse leaves plot area"""
         if event.type() in (QEvent.Leave, QEvent.HoverLeave):
             if obj == self.cumulative_plot:
+                self._end_plot_hover_session("cumulative", "cumulative_plot", reason="leave")
                 self.clear_cumulative_hover_items()
                 self._sync_hover_step(None, source='cumulative')
             elif obj == self.components_plot:
+                self._end_plot_hover_session("components", "components_plot", reason="leave")
                 self.clear_components_hover_items()
                 self._sync_hover_step(None, source='components')
         return super().eventFilter(obj, event)
+
+    def _start_plot_hover_session(self, plot_name, target_id, step):
+        session = self._plot_hover_sessions[plot_name]
+        session["step"] = int(step)
+        session["started"] = time.monotonic()
+        self._emit_interaction(
+            "plot_hover_start",
+            {
+                "target_id": target_id,
+                "interaction_type": "hover_start",
+                "plot": plot_name,
+                "step": int(step),
+            },
+        )
+
+    def _end_plot_hover_session(self, plot_name, target_id, reason="end"):
+        session = self._plot_hover_sessions[plot_name]
+        if session["step"] is None or session["started"] is None:
+            return
+
+        duration_ms = int((time.monotonic() - session["started"]) * 1000)
+        self._emit_interaction(
+            "plot_hover_end",
+            {
+                "target_id": target_id,
+                "interaction_type": "hover_end",
+                "plot": plot_name,
+                "step": int(session["step"]),
+                "duration_ms": int(max(0, duration_ms)),
+                "reason": reason,
+            },
+        )
+        session["step"] = None
+        session["started"] = None
+
+    def _update_plot_hover_session(self, plot_name, target_id, step):
+        session = self._plot_hover_sessions[plot_name]
+        step = int(step)
+        if session["step"] is None:
+            self._start_plot_hover_session(plot_name, target_id, step)
+            return
+        if session["step"] != step:
+            self._end_plot_hover_session(plot_name, target_id, reason="step_change")
+            self._start_plot_hover_session(plot_name, target_id, step)
+
+    def _build_decision_click_context(self, idx):
+        idx = int(max(0, min(idx, len(self.time_steps) - 1)))
+        action_id = int(self.action_log[idx]) if idx < len(self.action_log) else None
+        action_name = "Unknown"
+        if action_id is not None and self.data_manager:
+            action_name = self.data_manager.get_action_name(action_id)
+
+        prev_cum = float(self.cumulative_rewards[idx - 1]) if idx > 0 else float(self.cumulative_rewards[idx])
+        curr_cum = float(self.cumulative_rewards[idx])
+        next_cum = float(self.cumulative_rewards[idx + 1]) if idx + 1 < len(self.cumulative_rewards) else curr_cum
+        delta_prev = curr_cum - prev_cum
+        delta_next = next_cum - curr_cum
+        trend_delta = next_cum - prev_cum
+        if trend_delta > 0.05:
+            local_trend = "upward"
+        elif trend_delta < -0.05:
+            local_trend = "downward"
+        else:
+            local_trend = "flat"
+
+        window_start = max(0, idx - 2)
+        window_end = min(len(self.time_steps) - 1, idx + 2)
+        nearby_components_mean = {}
+        for name, values in self.reward_components.items():
+            slice_vals = [
+                float(values[i])
+                for i in range(window_start, window_end + 1)
+                if i < len(values)
+            ]
+            if slice_vals:
+                nearby_components_mean[name] = round(float(np.mean(slice_vals)), 4)
+
+        return {
+            "step_index": int(idx),
+            "action_id": action_id,
+            "action_name": action_name,
+            "local_trend": local_trend,
+            "local_cumulative_delta_prev": round(float(delta_prev), 4),
+            "local_cumulative_delta_next": round(float(delta_next), 4),
+            "nearby_components_mean": nearby_components_mean,
+        }
 
     def _sync_hover_step(self, step, source=None):
         """Synchronize hover timestep indicators across all three graphs."""
@@ -1323,6 +1611,9 @@ class VisualizationWidget(QWidget):
                 symbol='t', size=14,
                 pen=pg.mkPen(None), brush=pg.mkBrush(50, 200, 50, 220)
             )
+            self.positive_reward_points.sigClicked.connect(
+                lambda plot, points: self.on_reward_point_clicked(plot, points, "positive")
+            )
             self.cumulative_plot.addItem(self.positive_reward_points)
 
         if negative_indices:
@@ -1331,6 +1622,9 @@ class VisualizationWidget(QWidget):
                 [self.cumulative_rewards[i] for i in negative_indices],
                 symbol='d', size=10,
                 pen=pg.mkPen(None), brush=pg.mkBrush(200, 50, 50, 220)
+            )
+            self.negative_reward_points.sigClicked.connect(
+                lambda plot, points: self.on_reward_point_clicked(plot, points, "negative")
             )
             self.cumulative_plot.addItem(self.negative_reward_points)
         
@@ -1534,11 +1828,13 @@ class VisualizationWidget(QWidget):
         self.clear_cumulative_hover_items()
         
         if not event or not self.time_steps or not self.reward_log:
+            self._end_plot_hover_session("cumulative", "cumulative_plot", reason="no_data")
             return
         
         # Map mouse position to data coordinates
         pos = event[0]
         if not self.cumulative_plot.sceneBoundingRect().contains(pos):
+            self._end_plot_hover_session("cumulative", "cumulative_plot", reason="outside_plot")
             self._sync_hover_step(None, source='cumulative')
             return
         plot_item = self.cumulative_plot.getPlotItem()
@@ -1561,8 +1857,11 @@ class VisualizationWidget(QWidget):
         
         # If mouse is too far from point, don't show tooltip
         if abs(closest_time - x_coord) > (max(self.time_steps) - min(self.time_steps)) * 0.02:
+            self._end_plot_hover_session("cumulative", "cumulative_plot", reason="off_point")
             self._sync_hover_step(None, source='cumulative')
             return
+
+        self._update_plot_hover_session("cumulative", "cumulative_plot", closest_idx)
         
         # Get action name
         action_value = self.action_log[closest_idx]
@@ -1595,6 +1894,17 @@ class VisualizationWidget(QWidget):
             symbol='o'
         )
         self.cumulative_plot.addItem(self.highlight_point, ignoreBounds=True)
+        self._emit_interaction(
+            "plot_hover",
+            {
+                "target_id": "cumulative_plot",
+                "interaction_type": "hover",
+                "plot": "cumulative",
+                "step": int(closest_idx),
+            },
+            throttle_ms=250,
+            throttle_key="hover_cumulative",
+        )
         self._sync_hover_step(closest_idx, source='cumulative')
 
     
@@ -1604,11 +1914,13 @@ class VisualizationWidget(QWidget):
         self.clear_components_hover_items()
 
         if not hasattr(self, 'component_curves') or not self.component_curves:
+            self._end_plot_hover_session("components", "components_plot", reason="no_data")
             self._sync_hover_step(None, source='components')
             return
 
         pos = event[0]
         if not self.components_plot.sceneBoundingRect().contains(pos):
+            self._end_plot_hover_session("components", "components_plot", reason="outside_plot")
             self._sync_hover_step(None, source='components')
             return
 
@@ -1616,6 +1928,7 @@ class VisualizationWidget(QWidget):
         x, y = mouse_point.x(), mouse_point.y()
 
         if not self.time_steps:
+            self._end_plot_hover_session("components", "components_plot", reason="no_data")
             self._sync_hover_step(None, source='components')
             return
 
@@ -1623,8 +1936,11 @@ class VisualizationWidget(QWidget):
 
         # Keep tooltips only when mouse is reasonably near a step.
         if abs(self.time_steps[closest_idx] - x) > (max(self.time_steps) - min(self.time_steps)) / 20:
+            self._end_plot_hover_session("components", "components_plot", reason="off_point")
             self._sync_hover_step(None, source='components')
             return
+
+        self._update_plot_hover_session("components", "components_plot", closest_idx)
 
         # Gather component values at hovered step.
         component_values = {}
@@ -1683,7 +1999,88 @@ class VisualizationWidget(QWidget):
             pen=pg.mkPen(color=(100, 100, 100), width=1, style=Qt.DotLine)
         )
         self.components_plot.addItem(self.hover_line, ignoreBounds=True)
+        self._emit_interaction(
+            "plot_hover",
+            {
+                "target_id": "components_plot",
+                "interaction_type": "hover",
+                "plot": "components",
+                "step": int(closest_idx),
+            },
+            throttle_ms=250,
+            throttle_key="hover_components",
+        )
         self._sync_hover_step(closest_idx, source='components')
+
+    def on_cumulative_click(self, mouse_event):
+        if not self.time_steps:
+            return
+        pos = mouse_event.scenePos()
+        if not self.cumulative_plot.sceneBoundingRect().contains(pos):
+            return
+        mouse_point = self.cumulative_plot.getViewBox().mapSceneToView(pos)
+        x_coord = mouse_point.x()
+        closest_idx = int(np.argmin(np.abs(np.array(self.time_steps) - x_coord)))
+        self._emit_interaction(
+            "plot_click",
+            {
+                "target_id": "cumulative_plot",
+                "interaction_type": "click",
+                "plot": "cumulative",
+                "step": int(closest_idx),
+                "button": int(mouse_event.button()),
+            },
+        )
+
+    def on_components_click(self, mouse_event):
+        if not self.time_steps:
+            return
+        pos = mouse_event.scenePos()
+        if not self.components_plot.sceneBoundingRect().contains(pos):
+            return
+        mouse_point = self.components_plot.getViewBox().mapSceneToView(pos)
+        x_coord = mouse_point.x()
+        closest_idx = int(np.argmin(np.abs(np.array(self.time_steps) - x_coord)))
+        self._emit_interaction(
+            "plot_click",
+            {
+                "target_id": "components_plot",
+                "interaction_type": "click",
+                "plot": "components",
+                "step": int(closest_idx),
+                "button": int(mouse_event.button()),
+            },
+        )
+
+    def on_cumulative_range_changed(self, _view_box, view_range):
+        x_range, y_range = view_range
+        self._emit_interaction(
+            "plot_viewport_changed",
+            {
+                "target_id": "cumulative_plot",
+                "interaction_type": "zoom_pan",
+                "plot": "cumulative",
+                "x_range": [float(x_range[0]), float(x_range[1])],
+                "y_range": [float(y_range[0]), float(y_range[1])],
+            },
+            throttle_ms=300,
+            throttle_key="viewport_cumulative",
+        )
+
+    def on_components_range_changed(self, _view_box, view_range):
+        x_range, y_range = view_range
+        self._emit_interaction(
+            "plot_viewport_changed",
+            {
+                "target_id": "components_plot",
+                "interaction_type": "zoom_pan",
+                "plot": "components",
+                "x_range": [float(x_range[0]), float(x_range[1])],
+                "y_range": [float(y_range[0]), float(y_range[1])],
+            },
+            throttle_ms=300,
+            throttle_key="viewport_components",
+        )
     
     def toggle_view(self, view_type, visible):
         """Toggle visibility of different visualization types"""
@@ -1697,3 +2094,25 @@ class VisualizationWidget(QWidget):
             self.components_plot.setVisible(visible)
         elif view_type == 'decision':
             self.decision_plot.setVisible(visible)
+
+    def on_reward_point_clicked(self, _plot, points, decision_type):
+        for point in points:
+            step_value = int(round(point.pos().x()))
+            if not self.time_steps:
+                continue
+
+            nearest_idx = int(np.argmin(np.abs(np.array(self.time_steps) - step_value)))
+            nearest_step = int(self.time_steps[nearest_idx])
+            reward_value = float(self.reward_log[nearest_idx]) if nearest_idx < len(self.reward_log) else 0.0
+            context_payload = self._build_decision_click_context(nearest_idx)
+            self._emit_interaction(
+                "decision_point_click",
+                {
+                    "target_id": "reward_marker",
+                    "interaction_type": "point_select",
+                    "decision_type": decision_type,
+                    "step": nearest_step,
+                    "reward": reward_value,
+                    **context_payload,
+                },
+            )
