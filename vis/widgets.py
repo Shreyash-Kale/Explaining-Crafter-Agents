@@ -1141,6 +1141,7 @@ class VisualizationWidget(QWidget):
         self.components_hover_text = None
         self.highlight_point = None
         self.hover_line = None
+        self._hover_target_plot = None
         self.component_display_order = []
         self._last_interaction_emit = {}
         self._plot_hover_sessions = {
@@ -1257,71 +1258,110 @@ class VisualizationWidget(QWidget):
         cum_legend_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         cum_row.addWidget(cum_legend_scroll)
 
-        # Set higher stretch factor for plot row
-        self.main_layout.addWidget(cum_container, 6)
+        self.main_layout.addWidget(cum_container, 6)  # timeline
 
         # # Create the decision attribution comparison plot
         # self.decision_plot = DecisionAttribPlot(self.data_manager)
         # layout.addWidget(self.decision_plot, 4)  # reasonable space below cumulative
 
-        
-        # Create a plot for reward components with more space
-        self.components_plot = pg.PlotWidget(title="Reward Component Breakdown")
-        self.components_plot.setBackground('w')  # White background
-        self.components_plot.setLabel('left', 'Component Value')
-        self.components_plot.setLabel('bottom', 'Time Step')
-        self.components_plot.showGrid(x=True, y=True, alpha=0.3)
-        self.components_plot.setMouseEnabled(x=True, y=True)
-        
-        # Change text color to dark for better visibility
-        self.components_plot.getAxis('left').setTextPen('k')  # Black text
-        self.components_plot.getAxis('bottom').setTextPen('k')  # Black text
-        self.components_plot.setTitle("Reward Component Breakdown", color="#333", size="12pt")
-        self.components_plot.getViewBox().setDefaultPadding(0.0)
-        self.components_plot.getViewBox().setLimits(xMin=0)
-        self.components_plot.getViewBox().sigRangeChanged.connect(self.on_components_range_changed)
-        self.components_plot.scene().sigMouseClicked.connect(self.on_components_click)
-        
-        # Install event filter to clear hover items when mouse leaves plot
-        self.components_plot.installEventFilter(self)
-        
-        # Style improvements for components plot
-        self.components_plot.getAxis('bottom').setPen(axis_pen)
-        self.components_plot.getAxis('left').setPen(axis_pen)
-        self.components_plot.getAxis('bottom').setStyle(tickFont=font)
-        self.components_plot.getAxis('left').setStyle(tickFont=font)
-        
-        # Wrap components plot + external legend side-by-side in a container.
-        comp_container = QWidget()
-        comp_row = QHBoxLayout(comp_container)
-        comp_row.setContentsMargins(0, 0, 0, 0)
-        comp_row.setSpacing(0)
-        comp_row.addWidget(self.components_plot, 1)
 
-        # External legend panel — fixed width, scrollable, sits outside the plot.
-        self._comp_legend_inner = QWidget()
-        self._comp_legend_inner.setStyleSheet(
-            "background: white; border-left: 1px solid #ddd;"
-        )
-        self._comp_legend_vbox = QVBoxLayout(self._comp_legend_inner)
-        self._comp_legend_vbox.setContentsMargins(8, 8, 8, 8)
-        self._comp_legend_vbox.setSpacing(5)
-        _leg_title = QLabel("Components")
-        _leg_title.setStyleSheet(
-            "font-weight: bold; font-size: 10px; color: #333;"
-        )
-        self._comp_legend_vbox.addWidget(_leg_title)
-        self._comp_legend_vbox.addStretch(1)
+        # --- Survival Stats sub-plot (agent attributes: health, food, drink, energy) ---
+        self.agent_stats_plot = pg.PlotWidget(title="Survival Stats")
+        self.agent_stats_plot.setBackground('w')
+        self.agent_stats_plot.setLabel('left', 'Value (0–9)')
+        self.agent_stats_plot.setLabel('bottom', 'Time Step')
+        self.agent_stats_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.agent_stats_plot.setMouseEnabled(x=True, y=True)
+        self.agent_stats_plot.getAxis('left').setTextPen('k')
+        self.agent_stats_plot.getAxis('bottom').setTextPen('k')
+        self.agent_stats_plot.setTitle("Survival Stats", color="#333", size="12pt")
+        self.agent_stats_plot.getViewBox().setDefaultPadding(0.0)
+        self.agent_stats_plot.getViewBox().setLimits(xMin=0)
+        self.agent_stats_plot.getViewBox().sigRangeChanged.connect(
+            lambda vb, vr: self._on_sub_range_changed("agent_stats", vb, vr))
+        self.agent_stats_plot.scene().sigMouseClicked.connect(
+            lambda ev: self._on_sub_click("agent_stats", ev))
+        self.agent_stats_plot.installEventFilter(self)
+        self.agent_stats_plot.getAxis('bottom').setPen(axis_pen)
+        self.agent_stats_plot.getAxis('left').setPen(axis_pen)
+        self.agent_stats_plot.getAxis('bottom').setStyle(tickFont=font)
+        self.agent_stats_plot.getAxis('left').setStyle(tickFont=font)
 
-        legend_scroll = QScrollArea()
-        legend_scroll.setWidget(self._comp_legend_inner)
-        legend_scroll.setWidgetResizable(True)
-        legend_scroll.setFixedWidth(160)
-        legend_scroll.setFrameShape(QFrame.NoFrame)
-        legend_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        comp_row.addWidget(legend_scroll)
+        # --- Resource Events sub-plot (sapling, collect_sapling, etc.) ---
+        self.resource_events_plot = pg.PlotWidget(title="Resource Events")
+        self.resource_events_plot.setBackground('w')
+        self.resource_events_plot.setLabel('left', 'Event Count')
+        self.resource_events_plot.setLabel('bottom', 'Time Step')
+        self.resource_events_plot.showGrid(x=True, y=True, alpha=0.3)
+        self.resource_events_plot.setMouseEnabled(x=True, y=True)
+        self.resource_events_plot.getAxis('left').setTextPen('k')
+        self.resource_events_plot.getAxis('bottom').setTextPen('k')
+        self.resource_events_plot.setTitle("Resource Events", color="#333", size="12pt")
+        self.resource_events_plot.getViewBox().setDefaultPadding(0.0)
+        self.resource_events_plot.getViewBox().setLimits(xMin=0)
+        self.resource_events_plot.getViewBox().sigRangeChanged.connect(
+            lambda vb, vr: self._on_sub_range_changed("resource_events", vb, vr))
+        self.resource_events_plot.scene().sigMouseClicked.connect(
+            lambda ev: self._on_sub_click("resource_events", ev))
+        self.resource_events_plot.installEventFilter(self)
+        self.resource_events_plot.getAxis('bottom').setPen(axis_pen)
+        self.resource_events_plot.getAxis('left').setPen(axis_pen)
+        self.resource_events_plot.getAxis('bottom').setStyle(tickFont=font)
+        self.resource_events_plot.getAxis('left').setStyle(tickFont=font)
 
-        self.main_layout.addWidget(comp_container, 6)
+        # Keep backward-compat reference used by some helper methods.
+        self.components_plot = self.agent_stats_plot
+
+        # --- Survival Stats container (plot + its own legend) ---
+        agent_stats_container = QWidget()
+        agent_stats_row = QHBoxLayout(agent_stats_container)
+        agent_stats_row.setContentsMargins(0, 0, 0, 0)
+        agent_stats_row.setSpacing(0)
+        agent_stats_row.addWidget(self.agent_stats_plot, 1)
+
+        self._agent_legend_inner = QWidget()
+        self._agent_legend_inner.setStyleSheet("background: white; border-left: 1px solid #ddd;")
+        self._agent_legend_vbox = QVBoxLayout(self._agent_legend_inner)
+        self._agent_legend_vbox.setContentsMargins(8, 8, 8, 8)
+        self._agent_legend_vbox.setSpacing(5)
+        self._agent_legend_vbox.addStretch(1)
+
+        agent_legend_scroll = QScrollArea()
+        agent_legend_scroll.setWidget(self._agent_legend_inner)
+        agent_legend_scroll.setWidgetResizable(True)
+        agent_legend_scroll.setFixedWidth(160)
+        agent_legend_scroll.setFrameShape(QFrame.NoFrame)
+        agent_legend_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        agent_stats_row.addWidget(agent_legend_scroll)
+
+        self.main_layout.addWidget(agent_stats_container, 7)
+
+        # --- Resource Events container (plot + its own legend) ---
+        resource_events_container = QWidget()
+        resource_events_row = QHBoxLayout(resource_events_container)
+        resource_events_row.setContentsMargins(0, 0, 0, 0)
+        resource_events_row.setSpacing(0)
+        resource_events_row.addWidget(self.resource_events_plot, 1)
+
+        self._resource_legend_inner = QWidget()
+        self._resource_legend_inner.setStyleSheet("background: white; border-left: 1px solid #ddd;")
+        self._resource_legend_vbox = QVBoxLayout(self._resource_legend_inner)
+        self._resource_legend_vbox.setContentsMargins(8, 8, 8, 8)
+        self._resource_legend_vbox.setSpacing(5)
+        self._resource_legend_vbox.addStretch(1)
+
+        resource_legend_scroll = QScrollArea()
+        resource_legend_scroll.setWidget(self._resource_legend_inner)
+        resource_legend_scroll.setWidgetResizable(True)
+        resource_legend_scroll.setFixedWidth(160)
+        resource_legend_scroll.setFrameShape(QFrame.NoFrame)
+        resource_legend_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        resource_events_row.addWidget(resource_legend_scroll)
+
+        self.main_layout.addWidget(resource_events_container, 7)
+
+        # Backward-compat alias so set_data legend-clearing still works.
+        self._comp_legend_vbox = self._agent_legend_vbox
 
         # Create position markers (vertical lines)
         self.cumulative_position_line = pg.InfiniteLine(
@@ -1329,14 +1369,22 @@ class VisualizationWidget(QWidget):
             movable=False,
             pen=pg.mkPen('r', width=2, style=Qt.DashLine)
         )
-        self.components_position_line = pg.InfiniteLine(
+        self.agent_stats_position_line = pg.InfiniteLine(
             angle=90,
             movable=False,
             pen=pg.mkPen('r', width=2, style=Qt.DashLine)
         )
+        self.resource_events_position_line = pg.InfiniteLine(
+            angle=90,
+            movable=False,
+            pen=pg.mkPen('r', width=2, style=Qt.DashLine)
+        )
+        # Keep backward-compat alias
+        self.components_position_line = self.agent_stats_position_line
 
         self.cumulative_plot.addItem(self.cumulative_position_line)
-        self.components_plot.addItem(self.components_position_line)
+        self.agent_stats_plot.addItem(self.agent_stats_position_line)
+        self.resource_events_plot.addItem(self.resource_events_position_line)
 
         self.cumulative_sync_line = pg.InfiniteLine(
             angle=90,
@@ -1346,25 +1394,42 @@ class VisualizationWidget(QWidget):
         self.cumulative_sync_line.setVisible(False)
         self.cumulative_plot.addItem(self.cumulative_sync_line)
 
-        self.components_sync_line = pg.InfiniteLine(
+        self.agent_stats_sync_line = pg.InfiniteLine(
             angle=90,
             movable=False,
             pen=pg.mkPen(color=(80, 80, 80), width=1, style=Qt.DotLine)
         )
-        self.components_sync_line.setVisible(False)
-        self.components_plot.addItem(self.components_sync_line)
-        
+        self.agent_stats_sync_line.setVisible(False)
+        self.agent_stats_plot.addItem(self.agent_stats_sync_line)
+
+        self.resource_events_sync_line = pg.InfiniteLine(
+            angle=90,
+            movable=False,
+            pen=pg.mkPen(color=(80, 80, 80), width=1, style=Qt.DotLine)
+        )
+        self.resource_events_sync_line.setVisible(False)
+        self.resource_events_plot.addItem(self.resource_events_sync_line)
+
+        # Keep backward-compat alias
+        self.components_sync_line = self.agent_stats_sync_line
+
         # Set up proxy for mouse hover events
         self.cumulative_proxy = pg.SignalProxy(
-            self.cumulative_plot.scene().sigMouseMoved, 
-            rateLimit=60, 
+            self.cumulative_plot.scene().sigMouseMoved,
+            rateLimit=60,
             slot=self.on_cumulative_hover
         )
-        
-        self.components_proxy = pg.SignalProxy(
-            self.components_plot.scene().sigMouseMoved, 
-            rateLimit=60, 
-            slot=self.on_components_hover
+
+        self.agent_stats_proxy = pg.SignalProxy(
+            self.agent_stats_plot.scene().sigMouseMoved,
+            rateLimit=60,
+            slot=lambda ev: self._on_sub_hover("agent_stats", self.agent_stats_plot, ev)
+        )
+
+        self.resource_events_proxy = pg.SignalProxy(
+            self.resource_events_plot.scene().sigMouseMoved,
+            rateLimit=60,
+            slot=lambda ev: self._on_sub_hover("resource_events", self.resource_events_plot, ev)
         )
         
         # Add highlighted step region for context
@@ -1387,7 +1452,8 @@ class VisualizationWidget(QWidget):
         
         # Set plot size policies to allow expansion
         self.cumulative_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.components_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.agent_stats_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.resource_events_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
     
     def eventFilter(self, obj, event):
         """Event filter to clear hover items when mouse leaves plot area"""
@@ -1396,7 +1462,7 @@ class VisualizationWidget(QWidget):
                 self._end_plot_hover_session("cumulative", "cumulative_plot", reason="leave")
                 self.clear_cumulative_hover_items()
                 self._sync_hover_step(None, source='cumulative')
-            elif obj == self.components_plot:
+            elif obj in (self.agent_stats_plot, self.resource_events_plot):
                 self._end_plot_hover_session("components", "components_plot", reason="leave")
                 self.clear_components_hover_items()
                 self._sync_hover_step(None, source='components')
@@ -1489,10 +1555,11 @@ class VisualizationWidget(QWidget):
         }
 
     def _sync_hover_step(self, step, source=None):
-        """Synchronize hover timestep indicators across all three graphs."""
+        """Synchronize hover timestep indicators across all graphs."""
         if step is None or not self.time_steps:
             self.cumulative_sync_line.setVisible(False)
-            self.components_sync_line.setVisible(False)
+            self.agent_stats_sync_line.setVisible(False)
+            self.resource_events_sync_line.setVisible(False)
             if hasattr(self, 'decision_plot') and self.decision_plot is not None:
                 self.decision_plot.clear_external_hover()
             return
@@ -1507,10 +1574,13 @@ class VisualizationWidget(QWidget):
             self.cumulative_sync_line.setVisible(False)
 
         if source != 'components':
-            self.components_sync_line.setPos(x_pos)
-            self.components_sync_line.setVisible(True)
+            self.agent_stats_sync_line.setPos(x_pos)
+            self.agent_stats_sync_line.setVisible(True)
+            self.resource_events_sync_line.setPos(x_pos)
+            self.resource_events_sync_line.setVisible(True)
         else:
-            self.components_sync_line.setVisible(False)
+            self.agent_stats_sync_line.setVisible(False)
+            self.resource_events_sync_line.setVisible(False)
 
         if hasattr(self, 'decision_plot') and self.decision_plot is not None:
             if source != 'decision':
@@ -1542,20 +1612,29 @@ class VisualizationWidget(QWidget):
             self.highlight_point = None
     
     def clear_components_hover_items(self):
-        """Clear all hover items from components plot"""
+        """Clear all hover items from both component sub-plots"""
+        target = getattr(self, '_hover_target_plot', None)
+        if target is None:
+            targets = [self.agent_stats_plot, self.resource_events_plot]
+        else:
+            targets = [target]
+
         if hasattr(self, 'components_hover_text') and self.components_hover_text is not None:
-            try:
-                self.components_plot.removeItem(self.components_hover_text)
-            except Exception:
-                pass
+            for t in targets:
+                try:
+                    t.removeItem(self.components_hover_text)
+                except Exception:
+                    pass
             self.components_hover_text = None
-        
+
         if hasattr(self, 'hover_line') and self.hover_line is not None:
-            try:
-                self.components_plot.removeItem(self.hover_line)
-            except Exception:
-                pass
+            for t in targets:
+                try:
+                    t.removeItem(self.hover_line)
+                except Exception:
+                    pass
             self.hover_line = None
+        self._hover_target_plot = None
 
     def _place_plot_tooltip(self, plot_widget, text_item, point_x, point_y):
         vb = plot_widget.getViewBox()
@@ -1622,13 +1701,16 @@ class VisualizationWidget(QWidget):
         
         # Clear existing plots
         self.cumulative_plot.clear()
-        self.components_plot.clear()
-        
+        self.agent_stats_plot.clear()
+        self.resource_events_plot.clear()
+
         # Re-add position markers
         self.cumulative_plot.addItem(self.cumulative_position_line)
-        self.components_plot.addItem(self.components_position_line)
+        self.agent_stats_plot.addItem(self.agent_stats_position_line)
+        self.resource_events_plot.addItem(self.resource_events_position_line)
         self.cumulative_plot.addItem(self.cumulative_sync_line)
-        self.components_plot.addItem(self.components_sync_line)
+        self.agent_stats_plot.addItem(self.agent_stats_sync_line)
+        self.resource_events_plot.addItem(self.resource_events_sync_line)
         self.cumulative_plot.addItem(self.current_step_text)
         self.cumulative_plot.addItem(self.highlighted_region)
         
@@ -1639,12 +1721,14 @@ class VisualizationWidget(QWidget):
                 if item.widget():
                     item.widget().deleteLater()
 
-        # Clear the external legend panel (remove all label widgets except title + stretch).
-        if hasattr(self, '_comp_legend_vbox'):
-            while self._comp_legend_vbox.count() > 2:
-                item = self._comp_legend_vbox.takeAt(1)
-                if item.widget():
-                    item.widget().deleteLater()
+        # Clear both per-plot legend panels (keep only the trailing stretch at index 0).
+        for _lvbox in ('_agent_legend_vbox', '_resource_legend_vbox'):
+            lvbox = getattr(self, _lvbox, None)
+            if lvbox is not None:
+                while lvbox.count() > 1:
+                    item = lvbox.takeAt(0)
+                    if item.widget():
+                        item.widget().deleteLater()
         
         # Update the plots with new data
         self.update_cumulative_plot()
@@ -1681,23 +1765,36 @@ class VisualizationWidget(QWidget):
                 self.cumulative_plot.setXRange(x_min, x_max, padding=0)
                 self.cumulative_plot.setYRange(y_min - y_padding, y_max + y_padding)
             
-            # Set component X range.
-            self.components_plot.setXRange(x_min, x_max, padding=0)
+            # Set X range for both sub-plots.
+            self.agent_stats_plot.setXRange(x_min, x_max, padding=0)
+            self.resource_events_plot.setXRange(x_min, x_max, padding=0)
 
-            # Lock Y range from individual component values (non-stacked chart,
-            # so per-component max IS the visible max).  Locking prevents hover
-            # items from drifting the view even with ignoreBounds=False paths.
-            if self.reward_components:
-                all_vals = [v for vals in self.reward_components.values()
-                            for v in vals if isinstance(v, (int, float))]
-                if all_vals:
-                    c_y_min = min(0.0, min(all_vals))
-                    c_y_max = max(0.0, max(all_vals))
-                    c_y_pad = max((c_y_max - c_y_min) * 0.12, 0.5)
-                    self.components_plot.setYRange(
-                        c_y_min - c_y_pad, c_y_max + c_y_pad, padding=0
-                    )
-            self.components_plot.getViewBox().disableAutoRange()
+            # Agent stats: fixed 0–9.
+            self.agent_stats_plot.setYRange(-0.5, 9.5, padding=0)
+            self.agent_stats_plot.getViewBox().disableAutoRange()
+
+            # Resource events: compute range from actual data (values can exceed 1
+            # for cumulative counts like wake_up, collect_sapling, inventory items).
+            _res_excl = {
+                "value_estimate", "value", "action_probability",
+                "exploration_bonus", "world_model_score", "entropy",
+                "advantage", "step_reward", "done", "logit", "discount",
+                "cumulative_reward", "health", "food", "drink", "energy", "water",
+            }
+            resource_vals = [
+                v for k, vals in self.reward_components.items()
+                if _norm_component_key(k) not in _res_excl
+                and _component_group(k) not in ("agent", "decision")
+                for v in vals
+                if isinstance(v, (int, float)) and v == v  # skip NaN
+            ]
+            if resource_vals:
+                res_max = max(1.0, float(max(resource_vals)))
+                res_pad = max(res_max * 0.15, 0.15)
+                self.resource_events_plot.setYRange(-res_pad * 0.5, res_max + res_pad, padding=0)
+            else:
+                self.resource_events_plot.setYRange(-0.1, 1.2, padding=0)
+            self.resource_events_plot.getViewBox().disableAutoRange()
     
     def update_cumulative_plot(self):
         """Update the cumulative reward plot with interactive features"""
@@ -1805,7 +1902,11 @@ class VisualizationWidget(QWidget):
 
     
     def update_components_plot(self):
-        """Update the reward components plot - clean non-stacked overlapping area chart."""
+        """Update the split component plots — agent stats & resource events.
+
+        Decision attribution signals are excluded here (shown in the
+        dedicated DecisionAttribPlot below).
+        """
 
         if not self.time_steps or not self.reward_components:
             return
@@ -1813,9 +1914,26 @@ class VisualizationWidget(QWidget):
         self.component_curves = {}
         self.component_display_order = []
 
-        # Only keep components that actually contain non-zero values.
-        active = {k: v for k, v in self.reward_components.items()
-                  if any(val != 0 for val in v)}
+        # Columns to exclude from this plot (decision signals shown elsewhere,
+        # plus housekeeping columns that should never be treated as series).
+        _EXCLUDED = {
+            "value_estimate", "value", "action_probability",
+            "exploration_bonus", "world_model_score", "entropy",
+            "advantage", "step_reward",
+            # housekeeping
+            "done", "logit", "discount", "cumulative_reward",
+        }
+
+        # Only keep components that actually contain non-zero values
+        # and are NOT decision-attribution signals or junk columns.
+        active = {}
+        for k, v in self.reward_components.items():
+            if _norm_component_key(k) in _EXCLUDED:
+                continue
+            if _component_group(k) == "decision":
+                continue
+            if any(val != 0 for val in v if val == val):  # skip NaN
+                active[k] = v
         if not active:
             return
 
@@ -1829,14 +1947,9 @@ class VisualizationWidget(QWidget):
             if norm_key in norm_to_name and norm_to_name[norm_key] not in ordered_agent:
                 ordered_agent.append(norm_to_name[norm_key])
 
-        ordered_decision = []
-        for key in DECISION_COMPONENT_ORDER:
-            if key in norm_to_name and norm_to_name[key] not in ordered_decision:
-                ordered_decision.append(norm_to_name[key])
-
         resource_names = [
             name for name in active.keys()
-            if name not in ordered_agent and name not in ordered_decision
+            if name not in ordered_agent
         ]
         resource_priority = {name: idx for idx, name in enumerate(RESOURCE_PRIORITY_ORDER)}
         ordered_resources = sorted(
@@ -1844,18 +1957,11 @@ class VisualizationWidget(QWidget):
             key=lambda name: (resource_priority.get(_norm_component_key(name), 999), _norm_component_key(name)),
         )
 
-        sorted_component_names = ordered_agent + ordered_resources + ordered_decision
+        sorted_component_names = ordered_agent + ordered_resources
 
         x = np.array(self.time_steps)
 
         resource_color_idx = 0
-        decision_color_idx = 0
-        last_group = None
-        section_titles = {
-            "agent": "Agent Attributes",
-            "resource": "Resources",
-            "decision": "Decision Attribution Points",
-        }
 
         for name in sorted_component_names:
             values = active[name]
@@ -1864,46 +1970,53 @@ class VisualizationWidget(QWidget):
             if group == "agent":
                 canonical = _canonical_agent_key(name)
                 color_hex = VIZ_COLORS.get(canonical, "#808080")
-            elif group == "decision":
-                color_hex = _decision_color_hex(name, decision_color_idx)
-                decision_color_idx += 1
+                target_plot = self.agent_stats_plot
             else:
                 color_hex = _resource_color_hex(name, resource_color_idx)
                 resource_color_idx += 1
+                target_plot = self.resource_events_plot
 
             r, g, b = _hex_to_rgb_tuple(color_hex)
             y = np.array(values, dtype=float)
+            # Replace NaN with 0 so pyqtgraph doesn't choke.
+            y = np.where(np.isnan(y), 0.0, y)
             self.component_display_order.append(name)
             non_zero_count = int(np.count_nonzero(y))
+            # Sparse = fewer than 12% of steps have events.
             sparse_series = non_zero_count <= max(3, int(len(y) * 0.12))
+            # Step-function detection: values are non-negative integers that only
+            # increase (cumulative counts like wake_up, collect_sapling, sapling inventory).
+            is_step_fn = (group == "resource" and
+                          np.all(y >= 0) and
+                          np.all(np.diff(y) >= 0) and
+                          np.all(y == y.astype(int)))
 
-            # Each component fills from y=0 to its own value (non-stacked).
-            # fillLevel=0 handles both positive and negative values correctly.
             if group == "agent":
                 pen_style = Qt.SolidLine
                 pen_width = 2.2
                 fill_alpha = 48
                 z_value = 10
-            elif group == "decision":
-                pen_style = _decision_line_style(name)
-                pen_width = 2.6
-                fill_alpha = 10
-                z_value = 20
             else:
                 pen_style = Qt.SolidLine
                 pen_width = 2.4
-                fill_alpha = 0 if sparse_series else 22
+                # Dense but low fill; sparse gets markers; step-fns get solid fill
+                if is_step_fn:
+                    fill_alpha = 35
+                elif sparse_series:
+                    fill_alpha = 0
+                else:
+                    fill_alpha = 22
                 z_value = 30
 
-            curve = self.components_plot.plot(
+            curve = target_plot.plot(
                 x, y,
                 pen=pg.mkPen(color=(r, g, b), width=pen_width, style=pen_style),
                 fillLevel=0.0,
                 brush=pg.mkBrush(r, g, b, fill_alpha),
-                symbol='o' if (group == "resource" and sparse_series) else None,
-                symbolSize=4 if (group == "resource" and sparse_series) else None,
-                symbolBrush=pg.mkBrush(r, g, b, 170) if (group == "resource" and sparse_series) else None,
-                symbolPen=pg.mkPen(color=(r, g, b), width=1) if (group == "resource" and sparse_series) else None,
+                symbol='o' if (group == "resource" and sparse_series and not is_step_fn) else None,
+                symbolSize=7 if (group == "resource" and sparse_series and not is_step_fn) else None,
+                symbolBrush=pg.mkBrush(r, g, b, 200) if (group == "resource" and sparse_series and not is_step_fn) else None,
+                symbolPen=pg.mkPen(color=(r, g, b), width=1) if (group == "resource" and sparse_series and not is_step_fn) else None,
                 name=name,
             )
             curve.setZValue(z_value)
@@ -1912,33 +2025,27 @@ class VisualizationWidget(QWidget):
                 'curve': curve,
                 'values': list(values),
                 'color': (r, g, b),
+                'plot': target_plot,
             }
 
-            # Add a row to the external legend panel.
-            if hasattr(self, '_comp_legend_vbox'):
-                if group != last_group:
-                    section = QLabel(section_titles.get(group, "Other"))
-                    section.setStyleSheet(
-                        "font-size: 10px; font-weight: 700; color: #4e4e4e; "
-                        "margin-top: 6px; margin-bottom: 2px;"
-                    )
-                    self._comp_legend_vbox.insertWidget(self._comp_legend_vbox.count() - 1, section)
-                    last_group = group
-
-                self._add_toggle_legend_row(
-                    self._comp_legend_vbox,
-                    name.replace('_', ' '),
-                    color_hex,
-                    lambda visible, item=curve: item.setVisible(visible)
-                )
-
-        # Subtle zero reference line.
-        self.components_plot.addItem(
-            pg.InfiniteLine(
-                pos=0, angle=0,
-                pen=pg.mkPen(color=(80, 80, 80), width=1, style=Qt.DashLine)
+            # Route each series to the legend panel of its target plot.
+            legend_vbox = (self._agent_legend_vbox if group == "agent"
+                           else self._resource_legend_vbox)
+            self._add_toggle_legend_row(
+                legend_vbox,
+                name.replace('_', ' '),
+                color_hex,
+                lambda visible, item=curve: item.setVisible(visible)
             )
-        )
+
+        # Subtle zero reference lines on both sub-plots.
+        for sp in (self.agent_stats_plot, self.resource_events_plot):
+            sp.addItem(
+                pg.InfiniteLine(
+                    pos=0, angle=0,
+                    pen=pg.mkPen(color=(80, 80, 80), width=1, style=Qt.DashLine)
+                )
+            )
     
     def update_position(self, step, from_video=False, from_timeline=False):
         """Update the position marker in visualizations"""
@@ -1955,7 +2062,8 @@ class VisualizationWidget(QWidget):
         
         # Update position lines
         self.cumulative_position_line.setValue(x_pos)
-        self.components_position_line.setValue(x_pos)
+        self.agent_stats_position_line.setValue(x_pos)
+        self.resource_events_position_line.setValue(x_pos)
         if hasattr(self, 'decision_plot') and self.decision_plot is not None:
             self.decision_plot.update_marker(step)
         
@@ -2088,8 +2196,8 @@ class VisualizationWidget(QWidget):
         self._sync_hover_step(closest_idx, source='cumulative')
 
     
-    def on_components_hover(self, event):
-        """Handle hover events on the components plot with stable, adaptive tooltips."""
+    def _on_sub_hover(self, sub_name, plot_widget, event):
+        """Generic hover handler for agent_stats / resource_events sub-plots."""
 
         self.clear_components_hover_items()
 
@@ -2099,12 +2207,12 @@ class VisualizationWidget(QWidget):
             return
 
         pos = event[0]
-        if not self.components_plot.sceneBoundingRect().contains(pos):
+        if not plot_widget.sceneBoundingRect().contains(pos):
             self._end_plot_hover_session("components", "components_plot", reason="outside_plot")
             self._sync_hover_step(None, source='components')
             return
 
-        mouse_point = self.components_plot.getViewBox().mapSceneToView(pos)
+        mouse_point = plot_widget.getViewBox().mapSceneToView(pos)
         x, y = mouse_point.x(), mouse_point.y()
 
         if not self.time_steps:
@@ -2114,7 +2222,6 @@ class VisualizationWidget(QWidget):
 
         closest_idx = min(range(len(self.time_steps)), key=lambda i: abs(self.time_steps[i] - x))
 
-        # Keep tooltips only when mouse is reasonably near a step.
         if abs(self.time_steps[closest_idx] - x) > (max(self.time_steps) - min(self.time_steps)) / 20:
             self._end_plot_hover_session("components", "components_plot", reason="off_point")
             self._sync_hover_step(None, source='components')
@@ -2122,14 +2229,15 @@ class VisualizationWidget(QWidget):
 
         self._update_plot_hover_session("components", "components_plot", closest_idx)
 
-        # Gather component values at hovered step.
+        # Only show values for curves on THIS sub-plot.
         component_values = {}
         for name, data in self.component_curves.items():
+            if data.get('plot') is not plot_widget:
+                continue
             values = data['values']
             if closest_idx < len(values):
                 component_values[name] = values[closest_idx]
 
-        # Resolve action name (matching cumulative tooltip behavior).
         action_value = self.action_log[closest_idx] if closest_idx < len(self.action_log) else None
         action_name = "Unknown"
         if action_value is not None and self.data_manager:
@@ -2166,13 +2274,13 @@ class VisualizationWidget(QWidget):
             fill=pg.mkBrush(255, 255, 255, 252)
         )
         self.components_hover_text.setZValue(500)
+        self._hover_target_plot = plot_widget
 
-        # Add first so boundingRect is measurable for data-space clamping.
-        self.components_plot.addItem(self.components_hover_text, ignoreBounds=True)
+        plot_widget.addItem(self.components_hover_text, ignoreBounds=True)
 
         point_x = self.time_steps[closest_idx]
         point_y = y
-        self._place_plot_tooltip(self.components_plot, self.components_hover_text, point_x, point_y)
+        self._place_plot_tooltip(plot_widget, self.components_hover_text, point_x, point_y)
 
         self.hover_line = pg.InfiniteLine(
             pos=point_x,
@@ -2180,11 +2288,11 @@ class VisualizationWidget(QWidget):
             pen=pg.mkPen(color=(100, 100, 100), width=1, style=Qt.DotLine)
         )
         self.hover_line.setZValue(480)
-        self.components_plot.addItem(self.hover_line, ignoreBounds=True)
+        plot_widget.addItem(self.hover_line, ignoreBounds=True)
         self._emit_interaction(
             "plot_hover",
             {
-                "target_id": "components_plot",
+                "target_id": f"{sub_name}_plot",
                 "interaction_type": "hover",
                 "plot": "components",
                 "step": int(closest_idx),
@@ -2193,6 +2301,10 @@ class VisualizationWidget(QWidget):
             throttle_key="hover_components",
         )
         self._sync_hover_step(closest_idx, source='components')
+
+    def on_components_hover(self, event):
+        """Backward-compat shim — delegates to agent_stats sub-plot."""
+        self._on_sub_hover("agent_stats", self.agent_stats_plot, event)
 
     def on_cumulative_click(self, mouse_event):
         if not self.time_steps:
@@ -2214,25 +2326,31 @@ class VisualizationWidget(QWidget):
             },
         )
 
-    def on_components_click(self, mouse_event):
+    def _on_sub_click(self, sub_name, mouse_event):
+        """Generic click handler for agent_stats / resource_events sub-plots."""
+        plot_widget = self.agent_stats_plot if sub_name == "agent_stats" else self.resource_events_plot
         if not self.time_steps:
             return
         pos = mouse_event.scenePos()
-        if not self.components_plot.sceneBoundingRect().contains(pos):
+        if not plot_widget.sceneBoundingRect().contains(pos):
             return
-        mouse_point = self.components_plot.getViewBox().mapSceneToView(pos)
+        mouse_point = plot_widget.getViewBox().mapSceneToView(pos)
         x_coord = mouse_point.x()
         closest_idx = int(np.argmin(np.abs(np.array(self.time_steps) - x_coord)))
         self._emit_interaction(
             "plot_click",
             {
-                "target_id": "components_plot",
+                "target_id": f"{sub_name}_plot",
                 "interaction_type": "click",
                 "plot": "components",
                 "step": int(closest_idx),
                 "button": int(mouse_event.button()),
             },
         )
+
+    def on_components_click(self, mouse_event):
+        """Backward-compat shim."""
+        self._on_sub_click("agent_stats", mouse_event)
 
     def on_cumulative_range_changed(self, _view_box, view_range):
         x_range, y_range = view_range
@@ -2249,20 +2367,25 @@ class VisualizationWidget(QWidget):
             throttle_key="viewport_cumulative",
         )
 
-    def on_components_range_changed(self, _view_box, view_range):
+    def _on_sub_range_changed(self, sub_name, _view_box, view_range):
+        """Generic range-changed handler for agent_stats / resource_events."""
         x_range, y_range = view_range
         self._emit_interaction(
             "plot_viewport_changed",
             {
-                "target_id": "components_plot",
+                "target_id": f"{sub_name}_plot",
                 "interaction_type": "zoom_pan",
                 "plot": "components",
                 "x_range": [float(x_range[0]), float(x_range[1])],
                 "y_range": [float(y_range[0]), float(y_range[1])],
             },
             throttle_ms=300,
-            throttle_key="viewport_components",
+            throttle_key=f"viewport_{sub_name}",
         )
+
+    def on_components_range_changed(self, _view_box, view_range):
+        """Backward-compat shim."""
+        self._on_sub_range_changed("agent_stats", _view_box, view_range)
     
     def toggle_view(self, view_type, visible):
         """Toggle visibility of different visualization types"""
@@ -2273,7 +2396,8 @@ class VisualizationWidget(QWidget):
         if view_type == 'cumulative':
             self.cumulative_plot.setVisible(visible)
         elif view_type == 'components':
-            self.components_plot.setVisible(visible)
+            self.agent_stats_plot.setVisible(visible)
+            self.resource_events_plot.setVisible(visible)
         elif view_type == 'decision':
             self.decision_plot.setVisible(visible)
 

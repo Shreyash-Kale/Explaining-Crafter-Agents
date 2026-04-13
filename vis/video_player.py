@@ -107,8 +107,8 @@ class VideoPlayerWidget(QWidget):
         self.speed_button.setText("1x")
         self.speed_button.setPopupMode(QToolButton.InstantPopup)
         self.speed_button.setStyleSheet(
-            "QToolButton { background-color: #f7f7f7; border: 1px solid #9a9a9a; border-radius: 6px; padding: 0 8px; font-size: 12px; }"
-            "QToolButton:hover { background-color: #ffffff; border-color: #6f6f6f; }"
+            "QToolButton { border: 1px solid palette(mid); border-radius: 6px; padding: 0 8px; font-size: 12px; }"
+            "QToolButton:hover { border-color: palette(shadow); }"
             "QToolButton::menu-indicator { image: none; width: 0; }"
         )
 

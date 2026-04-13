@@ -30,9 +30,6 @@ else:
     DEFAULT_LOG_DIR = os.path.join(CRAFTER_DIR, 'logs')
     RESULTS_LOG_DIR = os.path.join(CRAFTER_DIR, 'results')
 
-# Debug prints to help troubleshoot
-print(f"Looking for logs in: {DEFAULT_LOG_DIR}")
-print(f"Looking for results in: {RESULTS_LOG_DIR}")
 
 # Visualization settings
 VIZ_COLORS = {

@@ -5,6 +5,11 @@ import os
 import re
 import numpy as np
 from datetime import datetime
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    __package__ = "vis"
+
 from PyQt5.QtWidgets import QApplication, QMainWindow, QFileDialog, QSplitter, QVBoxLayout, QWidget, QInputDialog
 from PyQt5.QtCore import Qt, QTimer, QFileSystemWatcher
 from PyQt5.QtWidgets import QStackedWidget, QPushButton
@@ -111,9 +116,9 @@ class MainWindow(QMainWindow):
         self.toggle_button.setFixedHeight(32)
         self.toggle_button.setMinimumWidth(150)
         self.toggle_button.setStyleSheet(
-            "QPushButton { background-color: #f7f7f7; border: 1px solid #9a9a9a; border-radius: 6px; padding: 0 12px; }"
-            "QPushButton:hover { background-color: #ffffff; border-color: #6f6f6f; }"
-            "QPushButton:pressed { background-color: #e8e8e8; }"
+            "QPushButton { border: 1px solid palette(mid); border-radius: 6px; padding: 0 12px; }"
+            "QPushButton:hover { border-color: palette(shadow); }"
+            "QPushButton:pressed { border-color: palette(dark); }"
         )
         self.toggle_button.clicked.connect(self.toggle_view)
 
@@ -215,6 +220,8 @@ class MainWindow(QMainWindow):
         if self._restarting:
             return
         self._restarting = True
+        # Propagate the current logging choice so the restarted process skips the prompt.
+        os.environ["VIS_STUDY_LOGGING"] = "1" if self.study_logging_enabled else "0"
         python_exec = sys.executable
         os.execv(python_exec, [python_exec] + sys.argv)
 
@@ -257,7 +264,8 @@ class MainWindow(QMainWindow):
         self.logger.attach_visibility_tag("video_panel", self.video_player)
         self.logger.attach_visibility_tag("timeline_slider", self.timeline)
         self.logger.attach_visibility_tag("cumulative_plot", self.visualization.cumulative_plot)
-        self.logger.attach_visibility_tag("components_plot", self.visualization.components_plot)
+        self.logger.attach_visibility_tag("agent_stats_plot", self.visualization.agent_stats_plot)
+        self.logger.attach_visibility_tag("resource_events_plot", self.visualization.resource_events_plot)
         self.logger.attach_visibility_tag("info_panel", self.info_panel)
         self.logger.attach_visibility_tag("explanation_panel", self.explanation_panel)
         self.logger.attach_visibility_tag("decision_container", self.bottom_right_container)
@@ -725,9 +733,6 @@ class MainWindow(QMainWindow):
         if not self.data_manager.load_data(log_file):
             print(f"Failed to load data from {log_file}")
             return False
-    
-        # Load event data
-        self.data_manager.load_data(log_file)
 
         total_steps = len(self.data_manager.time_steps)
         reward_values = [float(v) for v in self.data_manager.reward_log]
