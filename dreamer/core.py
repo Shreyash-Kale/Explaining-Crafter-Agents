@@ -386,7 +386,7 @@ class DreamerV2:
         sequence_length=50,
         # imagination_horizon=15,
         imagination_horizon=25,
-        gamma=0.99,
+        gamma=0.999,  # Paper uses 0.999; 0.99 was too shortsighted for long achievement chains
         lambda_=0.95,
         # actor_entropy=1e-4,
         training_interval = 5, # Number of steps between training updates
@@ -394,7 +394,7 @@ class DreamerV2:
         actor_grad='dynamics',  # 'reinforce' or 'dynamics'
         actor_lr=1e-4,
         critic_lr=1e-4,
-        model_lr=3e-4,
+        model_lr=6e-4,  # Paper uses 6e-4; 3e-4 was causing slow world model learning
         kl_weight=1.0,
         kl_balance=0.8,  # Between 0 and 1, 0.5 means equal weight posterior vs prior
         free_nats=1.0,  # Minimum KL divergence

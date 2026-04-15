@@ -181,8 +181,6 @@ class DreamerPolicy:
             action_space=env.action_space,
             checkpoint_dir=checkpoint_dir,
             load_checkpoint=load_checkpoint,
-            actor_entropy=1e-3,          # ← more exploration
-            imagination_horizon=25       # ← longer rollouts
         )
         
         # Add global step tracking
