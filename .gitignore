@@ -17,6 +17,11 @@ crafter_env/
 
 # Editor
 .vscode/
+.claude/
+
+# Documentation (local only)
+Markdown Files/
+study_logs/
 
 # Logs and outputs
 logs/
