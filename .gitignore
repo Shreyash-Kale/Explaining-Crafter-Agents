@@ -25,8 +25,12 @@ saved_checkpoints/
 training_logs/
 videos/
 archive/
+dreamer_checkpoints/
+checkpoints/
+log_*/
 results.zip
 stats.jsonl
+training_run.log
 
 # Media and data artifacts
 *.mp4

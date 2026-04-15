@@ -153,6 +153,7 @@ class StudyLogger:
         "episode_id",
         "frame",
         "time_step",
+        "source",
         "ui_state_json",
         "event_payload_json",
     ]
@@ -183,6 +184,7 @@ class StudyLogger:
 
         self._last_emit_by_key: Dict[str, float] = {}
         self._visibility_filters = []
+        self._last_ui_state_json: str = ""
 
         self._event_category = {
             "session": {
@@ -309,6 +311,7 @@ class StudyLogger:
 
         target_id = payload.get("target_id", "")
         interaction_type = payload.get("interaction_type", event_type)
+        source = payload.get("source", "unknown")
 
         row = {
             "event_seq": self.event_seq,
@@ -324,12 +327,21 @@ class StudyLogger:
             "episode_id": self.episode_id,
             "frame": self.current_frame,
             "time_step": self.current_step,
-            "ui_state_json": json.dumps(self.ui_state, ensure_ascii=True, separators=(",", ":")),
+            "source": source,
+            "ui_state_json": self._delta_ui_state_json(),
             "event_payload_json": json.dumps(payload, ensure_ascii=True, separators=(",", ":")),
         }
 
         self._writer.writerow(row)
         self._file.flush()
+
+    def _delta_ui_state_json(self) -> str:
+        """Return full ui_state JSON only when it has changed; empty string otherwise."""
+        current = json.dumps(self.ui_state, ensure_ascii=True, separators=(",", ":"))
+        if current != self._last_ui_state_json:
+            self._last_ui_state_json = current
+            return current
+        return ""
 
     def close(self):
         if getattr(self, "_file", None) is None or self._file.closed:

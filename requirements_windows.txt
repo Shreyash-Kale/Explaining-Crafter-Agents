@@ -1,5 +1,5 @@
-# macOS (Apple Silicon) — use tensorflow-macos instead of tensorflow
-tensorflow-macos==2.16.1
+# Windows via WSL2 (Ubuntu 22.04) + CUDA 12.x
+# Do NOT install tensorflow-macos here
 tensorflow==2.16.1
 tf-keras==2.16.0
 tensorflow-probability==0.24.0

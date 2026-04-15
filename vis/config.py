@@ -51,6 +51,21 @@ VIZ_COLORS = {
 # Video player settings
 DEFAULT_FPS = 30
 
+# Study-log folder structure
+#
+#   study_logs/
+#   ├── raw/       — raw event CSVs  (full log, JSON payloads, archival)
+#   ├── reports/   — _report.txt     (human-readable timeline, qualitative review)
+#   └── analysis/  — _analysis.csv   (flat, no-JSON, for Excel / pandas)
+#
+STUDY_LOGS_BASE_DIR     = os.path.join(CRAFTER_DIR, 'study_logs')
+STUDY_LOGS_RAW_DIR      = os.path.join(STUDY_LOGS_BASE_DIR, 'raw')
+STUDY_LOGS_REPORTS_DIR  = os.path.join(STUDY_LOGS_BASE_DIR, 'reports')
+STUDY_LOGS_ANALYSIS_DIR = os.path.join(STUDY_LOGS_BASE_DIR, 'analysis')
+
+for _d in (STUDY_LOGS_RAW_DIR, STUDY_LOGS_REPORTS_DIR, STUDY_LOGS_ANALYSIS_DIR):
+    os.makedirs(_d, exist_ok=True)
+
 # Create required directories if they don't exist (only for live runs)
 if not _latest_run:
     os.makedirs(DEFAULT_LOG_DIR, exist_ok=True)

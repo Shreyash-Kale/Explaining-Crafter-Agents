@@ -56,18 +56,21 @@ def _normalize_action_name(action: Any, executed_action: Any = None) -> str:
     if isinstance(chosen, str):
         stripped = chosen.strip()
         if stripped:
-            # Support numeric strings such as "6".
             try:
                 action_id = int(stripped)
-                return ACTION_MAPPING.get(action_id, f"unknown_{action_id}")
+                raw = ACTION_MAPPING.get(action_id, f"unknown_{action_id}")
             except ValueError:
-                return stripped.lower()
-
-    try:
-        action_id = int(chosen)
-        return ACTION_MAPPING.get(action_id, f"unknown_{action_id}")
-    except (TypeError, ValueError):
-        return "unknown"
+                raw = stripped.lower()
+        else:
+            raw = "unknown"
+    else:
+        try:
+            action_id = int(chosen)
+            raw = ACTION_MAPPING.get(action_id, f"unknown_{action_id}")
+        except (TypeError, ValueError):
+            raw = "unknown"
+    # Convert snake_case to readable form: "move_up" -> "Move Up"
+    return raw.replace("_", " ").title()
 
 
 def _confidence_label(prob: float) -> str:
@@ -119,6 +122,36 @@ def infer_algorithm(step_row: Dict[str, Any]) -> str:
     return "unknown"
 
 
+def _reward_context(reward: float) -> Optional[str]:
+    """Describe the immediate reward received, if notable."""
+    if reward > 0.5:
+        return f"The agent received a significant reward of {reward:.2f} this step."
+    if reward > 0.001:
+        return f"A small reward of {reward:.2f} was earned."
+    if reward < -0.001:
+        return f"The agent received a penalty of {reward:.2f}."
+    return None
+
+
+def _vital_changes(step_row: Dict[str, Any], prev_row: Optional[Dict[str, Any]]) -> list[str]:
+    """Describe notable changes in health, food, drink, energy."""
+    if prev_row is None:
+        return []
+    notes: list[str] = []
+    for stat, label in [("health", "Health"), ("food", "Food"), ("drink", "Thirst"),
+                        ("energy", "Energy")]:
+        curr = _safe_float(step_row.get(stat), default=-1)
+        prev = _safe_float(prev_row.get(stat), default=-1)
+        if curr < 0 or prev < 0:
+            continue
+        delta = curr - prev
+        if delta <= -2:
+            notes.append(f"{label} dropped sharply (from {int(prev)} to {int(curr)}).")
+        elif curr <= 2 and prev > 2:
+            notes.append(f"{label} is critically low ({int(curr)}/9).")
+    return notes
+
+
 def generate_explanation(
     step_row: Dict[str, Any],
     prev_row: Optional[Dict[str, Any]] = None,
@@ -166,6 +199,13 @@ def generate_explanation(
         f"Its value estimate was {direction}, meaning it was {meaning}.",
     ]
 
+    # Reward context
+    reward = _safe_float(step_row.get("reward"), default=0.0)
+    reward_text = _reward_context(reward)
+    if reward_text:
+        lines.append(reward_text)
+
+    # Algorithm-specific signals
     if algo == "dreamer":
         world_model_score = _safe_float(step_row.get("world_model_score"), default=0.5)
         exploration_bonus = _safe_float(step_row.get("exploration_bonus"), default=0.0)
@@ -180,11 +220,17 @@ def generate_explanation(
     else:
         lines.append("Algorithm-specific attribution signals were not available for this step.")
 
+    # Vital stat warnings (health/food/drink/energy drops)
+    vital_notes = _vital_changes(step_row, prev_row)
+    lines.extend(vital_notes)
+
+    # Achievement unlocks
     achievement = step_row.get("achievement_unlocked") or step_row.get("achievement")
     if achievement:
-        lines.append(f"This step appears to unlock: {achievement}.")
+        ach_label = str(achievement).replace("_", " ").title()
+        lines.append(f"This step unlocked the '{ach_label}' achievement!")
 
-    return " ".join(lines)
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

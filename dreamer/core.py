@@ -390,7 +390,7 @@ class DreamerV2:
         lambda_=0.95,
         # actor_entropy=1e-4,
         training_interval = 5, # Number of steps between training updates
-        actor_entropy=1e-3,
+        actor_entropy=1e-4,  # Reduced from 3e-4; policy still uniform at 340K so pushing further
         actor_grad='dynamics',  # 'reinforce' or 'dynamics'
         actor_lr=1e-4,
         critic_lr=1e-4,

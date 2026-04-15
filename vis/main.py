@@ -19,7 +19,8 @@ from .video_player import VideoPlayerWidget
 from .widgets import VisualizationWidget, InfoPanel, ExplanationPanel
 from .data_manager import DataManager
 from .timeline import TimelineController
-from .config import DEFAULT_LOG_DIR, RESULTS_LOG_DIR, VIZ_COLORS, DEFAULT_FPS
+from .config import DEFAULT_LOG_DIR, RESULTS_LOG_DIR, VIZ_COLORS, DEFAULT_FPS, \
+    STUDY_LOGS_RAW_DIR, STUDY_LOGS_REPORTS_DIR, STUDY_LOGS_ANALYSIS_DIR
 from .study_logger import StudyLogger, NoOpStudyLogger
 import random
 
@@ -60,9 +61,12 @@ class MainWindow(QMainWindow):
                 "Study Session",
                 "Enter participant ID:",
             )
-            self.logger = StudyLogger(participant_id=participant_id.strip() if ok and participant_id else None)
+            self.logger = StudyLogger(
+                output_dir=STUDY_LOGS_RAW_DIR,
+                participant_id=participant_id.strip() if ok and participant_id else None,
+            )
             print("Study logging enabled")
-            print(f"Session log: {self.logger.log_path}")
+            print(f"  raw log : {self.logger.log_path}")
         else:
             self.logger = NoOpStudyLogger()
             print("Study logging disabled")
@@ -947,7 +951,24 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.logger.close()
+        if self.study_logging_enabled:
+            self._generate_session_reports()
         super().closeEvent(event)
+
+    def _generate_session_reports(self):
+        from pathlib import Path
+        from .log_report import generate_txt_report, generate_analysis_csv
+        log_path = self.logger.log_path
+        try:
+            txt_path = generate_txt_report(log_path, output_dir=Path(STUDY_LOGS_REPORTS_DIR))
+            print(f"  txt report  : {txt_path}")
+        except Exception as e:
+            print(f"  txt report failed: {e}")
+        try:
+            analysis_path = generate_analysis_csv(log_path, output_dir=Path(STUDY_LOGS_ANALYSIS_DIR))
+            print(f"  analysis CSV: {analysis_path}")
+        except Exception as e:
+            print(f"  analysis CSV failed: {e}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

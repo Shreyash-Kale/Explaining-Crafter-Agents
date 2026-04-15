@@ -9,6 +9,12 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use("Agg")      # non-interactive PNG backend
+import tensorflow as tf
+
+# Allow GPU memory to grow on demand rather than reserving all VRAM at startup.
+# This is a no-op on macOS Metal but essential on NVIDIA GPUs.
+for _gpu in tf.config.list_physical_devices('GPU'):
+    tf.config.experimental.set_memory_growth(_gpu, True)
 
 from .policy import DreamerPolicy
 from .env import create_environment, run_episode
@@ -51,9 +57,11 @@ def train_dreamer(
         target_step = start_step + total_steps
         
         # Create new directories with step-based naming
+        # checkpoint_dir ends with ckpt_XXX, so strip it to get the parent
         parent_checkpoint_dir = os.path.dirname(checkpoint_dir) if os.path.dirname(checkpoint_dir) else '.'
-        parent_log_dir = os.path.dirname(log_dir) if os.path.dirname(log_dir) else '.'
-        
+        # log_dir is already the base directory (e.g. ./training_logs), use it directly
+        parent_log_dir = log_dir
+
         new_checkpoint_dir = f"{parent_checkpoint_dir}/ckpt_{target_step}"
         new_log_dir = f"{parent_log_dir}/log_{target_step}"
         
@@ -70,9 +78,12 @@ def train_dreamer(
         log_dir = new_log_dir
     else:
         # Fresh training, use step-based directories
-        parent_checkpoint_dir = os.path.dirname(checkpoint_dir) if os.path.dirname(checkpoint_dir) else '.'
-        parent_log_dir = os.path.dirname(log_dir) if os.path.dirname(log_dir) else '.'
-        
+        target_step = total_steps
+        # checkpoint_dir is the base directory for fresh runs (e.g. ./dreamer_checkpoints)
+        parent_checkpoint_dir = checkpoint_dir
+        # log_dir is always the base directory (e.g. ./training_logs)
+        parent_log_dir = log_dir
+
         checkpoint_dir = f"{parent_checkpoint_dir}/ckpt_{total_steps}"
         log_dir = f"{parent_log_dir}/log_{total_steps}"
         
@@ -134,7 +145,7 @@ def train_dreamer(
     
   
     
-    while step_count < total_steps:
+    while step_count < target_step:
         # Get actions from policy for all environments
         actions = []
         for obs in observations:

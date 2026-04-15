@@ -3,9 +3,9 @@
 import time
 import numpy as np
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
-                           QGraphicsDropShadowEffect, QSizePolicy, QGridLayout, QPushButton, 
+                           QGraphicsDropShadowEffect, QSizePolicy, QGridLayout, QPushButton,
                            QTabWidget, QListWidget, QStyle, QFrame, QGraphicsDropShadowEffect, QListWidgetItem,
-                           QScrollArea,
+                           QScrollArea, QSplitter,
                            QToolTip)
 from PyQt5.QtCore import Qt, pyqtSlot, QRectF, QEvent, pyqtSignal
 from PyQt5.QtGui import QColor, QPainter, QFont, QBrush, QPicture, QIcon, QCursor
@@ -483,11 +483,23 @@ class ExplanationPanel(QFrame):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(6)
+        layout.setSpacing(4)
 
-        self.title_label = QLabel("Explanation Toolbox")
+        # Header row: title + step badge
+        header_row = QHBoxLayout()
+        header_row.setSpacing(8)
+        self.title_label = QLabel("Why did the agent do this?")
         self.title_label.setStyleSheet("font-size: 14px; font-weight: 600; color: #1f1f1f;")
-        layout.addWidget(self.title_label)
+        header_row.addWidget(self.title_label)
+        header_row.addStretch(1)
+        self.step_badge = QLabel("")
+        self.step_badge.setStyleSheet(
+            "font-size: 11px; font-weight: 600; color: #fff; "
+            "background-color: #5a7bbf; border-radius: 8px; padding: 2px 10px;"
+        )
+        self.step_badge.setVisible(False)
+        header_row.addWidget(self.step_badge)
+        layout.addLayout(header_row)
 
         self.meta_label = QLabel("Waiting for trajectory data...")
         self.meta_label.setStyleSheet("font-size: 11px; color: #5a5a5a;")
@@ -499,7 +511,7 @@ class ExplanationPanel(QFrame):
         self.explanation_label.setWordWrap(True)
         self.explanation_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.explanation_label.setStyleSheet(
-            "font-size: 12px; color: #222; line-height: 1.35; "
+            "font-size: 12px; color: #222; line-height: 1.45; "
             "background-color: #fafafa; border: 1px solid #ececec; border-radius: 4px; padding: 8px;"
         )
         layout.addWidget(self.explanation_label, 1)
@@ -547,10 +559,31 @@ class ExplanationPanel(QFrame):
         action_name = self.data_manager.get_action_name(curr.get('action'))
         reward = curr.get('reward', 0.0)
 
+        # Format action name for display
+        display_action = str(action_name).replace("_", " ").title()
+
+        self.step_badge.setText(f"Step {idx}")
+        self.step_badge.setVisible(True)
         self.meta_label.setText(
-            f"Step {idx} | Action: {action_name} | Reward: {float(reward):.3f} | Algorithm: {algo.upper()}"
+            f"Action: {display_action}  |  Reward: {float(reward):+.3f}  |  Agent: {algo.upper()}"
         )
-        self.explanation_label.setText(text)
+        # Render each line of the explanation as a separate paragraph for readability
+        html_lines = []
+        for line in text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            if "unlocked" in line.lower() or "achievement" in line.lower():
+                html_lines.append(f"<p style='color:#2e7d32; font-weight:600; margin:2px 0;'>{line}</p>")
+            elif "critically low" in line.lower() or "dropped sharply" in line.lower():
+                html_lines.append(f"<p style='color:#c62828; margin:2px 0;'>{line}</p>")
+            elif "penalty" in line.lower():
+                html_lines.append(f"<p style='color:#bf360c; margin:2px 0;'>{line}</p>")
+            elif "significant reward" in line.lower():
+                html_lines.append(f"<p style='color:#2e7d32; margin:2px 0;'>{line}</p>")
+            else:
+                html_lines.append(f"<p style='margin:2px 0;'>{line}</p>")
+        self.explanation_label.setText("".join(html_lines))
 
 
 class CustomBarGraphItem(pg.GraphicsObject):
@@ -710,8 +743,8 @@ class DecisionAttribPlot(QWidget):
 
         self.plot = pg.PlotWidget(background="w")
         self.plot.showGrid(x=True, y=True, alpha=0.3)
-        self.plot.setLabel('left', 'Normalised Value')
-        self.plot.setLabel('bottom', 'Time Step')
+        self.plot.setLabel('left', 'Signal Strength (0–1)')
+        self.plot.setLabel('bottom', 'Step')
         self.plot.getAxis('left').setTextPen('k')
         self.plot.getAxis('bottom').setTextPen('k')
         self.plot.getViewBox().setDefaultPadding(0.0)
@@ -726,7 +759,7 @@ class DecisionAttribPlot(QWidget):
         self._legend_vbox = QVBoxLayout(self._legend_inner)
         self._legend_vbox.setContentsMargins(8, 8, 8, 8)
         self._legend_vbox.setSpacing(5)
-        title = QLabel("Decision Attribution Legend")
+        title = QLabel("Decision Signals")
         title.setStyleSheet("font-weight: bold; font-size: 10px; color: #333;")
         self._legend_vbox.addWidget(title)
         self._legend_vbox.addStretch(1)
@@ -815,7 +848,7 @@ class DecisionAttribPlot(QWidget):
                 ("World-model score", "world_model_score", self.dm.get_dreamer_wm_score_norm()),
             ]
 
-        self._add_legend_section("Decision Attribution Points")
+        self._add_legend_section("Signals")
         decision_color_idx = 0
 
         for name, key, y in curves:
@@ -835,7 +868,7 @@ class DecisionAttribPlot(QWidget):
                 self._add_legend_row(name, color_hex, curve)
 
         algo = "PPO" if ppo_ok else "Dreamer" if dr_ok else "Agent"
-        self.plot.setTitle(f"Decision Attribution – {algo}", color="#333", size="12pt")
+        self.plot.setTitle(f"Decision Signals – {algo}", color="#333", size="12pt")
 
         if len(x) > 1:
             self.plot.setXRange(0, len(x) - 1, padding=0)
@@ -1204,17 +1237,17 @@ class VisualizationWidget(QWidget):
         # self.main_layout.addWidget(self.cumulative_plot, 6)  # Lower stretch factor
         
         # Create a plot widget for the cumulative reward with more space
-        self.cumulative_plot = pg.PlotWidget(title="Agent Reward Timeline")
+        self.cumulative_plot = pg.PlotWidget(title="Reward Over Time")
         self.cumulative_plot.setBackground('w')  # White background
-        self.cumulative_plot.setLabel('left', 'Reward')
-        self.cumulative_plot.setLabel('bottom', 'Time Step')
+        self.cumulative_plot.setLabel('left', 'Cumulative Reward')
+        self.cumulative_plot.setLabel('bottom', 'Step')
         self.cumulative_plot.showGrid(x=True, y=True, alpha=0.3)
         self.cumulative_plot.setMouseEnabled(x=True, y=True)
         
         # Change text color to dark for better visibility
         self.cumulative_plot.getAxis('left').setTextPen('k')  # Black text
         self.cumulative_plot.getAxis('bottom').setTextPen('k')  # Black text
-        self.cumulative_plot.setTitle("Agent Reward Timeline", color="#333", size="12pt")
+        self.cumulative_plot.setTitle("Reward Over Time", color="#333", size="12pt")
         self.cumulative_plot.getViewBox().setDefaultPadding(0.0)
         self.cumulative_plot.getViewBox().setLimits(xMin=0)
         self.cumulative_plot.getViewBox().sigRangeChanged.connect(self.on_cumulative_range_changed)
@@ -1258,23 +1291,33 @@ class VisualizationWidget(QWidget):
         cum_legend_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         cum_row.addWidget(cum_legend_scroll)
 
-        self.main_layout.addWidget(cum_container, 6)  # timeline
+        # Use a vertical splitter so users can drag-resize individual graphs.
+        self.graph_splitter = QSplitter(Qt.Vertical)
+        self.graph_splitter.setChildrenCollapsible(False)
+        self.graph_splitter.setHandleWidth(8)
+        self.graph_splitter.setStyleSheet(
+            "QSplitter::handle:vertical {"
+            "  background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
+            "      stop:0 #c8c8c8, stop:0.3 #9e9e9e, stop:0.5 #888, stop:0.7 #9e9e9e, stop:1 #c8c8c8);"
+            "  border-top: 1px solid #aaa; border-bottom: 1px solid #aaa;"
+            "  min-height: 8px; max-height: 8px;"
+            "}"
+        )
+        self.main_layout.addWidget(self.graph_splitter, 1)
 
-        # # Create the decision attribution comparison plot
-        # self.decision_plot = DecisionAttribPlot(self.data_manager)
-        # layout.addWidget(self.decision_plot, 4)  # reasonable space below cumulative
+        self.graph_splitter.addWidget(cum_container)
 
 
         # --- Survival Stats sub-plot (agent attributes: health, food, drink, energy) ---
-        self.agent_stats_plot = pg.PlotWidget(title="Survival Stats")
+        self.agent_stats_plot = pg.PlotWidget(title="Agent Health & Vitals")
         self.agent_stats_plot.setBackground('w')
-        self.agent_stats_plot.setLabel('left', 'Value (0–9)')
-        self.agent_stats_plot.setLabel('bottom', 'Time Step')
+        self.agent_stats_plot.setLabel('left', 'Level (0–9)')
+        self.agent_stats_plot.setLabel('bottom', 'Step')
         self.agent_stats_plot.showGrid(x=True, y=True, alpha=0.3)
         self.agent_stats_plot.setMouseEnabled(x=True, y=True)
         self.agent_stats_plot.getAxis('left').setTextPen('k')
         self.agent_stats_plot.getAxis('bottom').setTextPen('k')
-        self.agent_stats_plot.setTitle("Survival Stats", color="#333", size="12pt")
+        self.agent_stats_plot.setTitle("Agent Health & Vitals", color="#333", size="12pt")
         self.agent_stats_plot.getViewBox().setDefaultPadding(0.0)
         self.agent_stats_plot.getViewBox().setLimits(xMin=0)
         self.agent_stats_plot.getViewBox().sigRangeChanged.connect(
@@ -1288,15 +1331,15 @@ class VisualizationWidget(QWidget):
         self.agent_stats_plot.getAxis('left').setStyle(tickFont=font)
 
         # --- Resource Events sub-plot (sapling, collect_sapling, etc.) ---
-        self.resource_events_plot = pg.PlotWidget(title="Resource Events")
+        self.resource_events_plot = pg.PlotWidget(title="Resources & Achievements")
         self.resource_events_plot.setBackground('w')
-        self.resource_events_plot.setLabel('left', 'Event Count')
-        self.resource_events_plot.setLabel('bottom', 'Time Step')
+        self.resource_events_plot.setLabel('left', 'Count')
+        self.resource_events_plot.setLabel('bottom', 'Step')
         self.resource_events_plot.showGrid(x=True, y=True, alpha=0.3)
         self.resource_events_plot.setMouseEnabled(x=True, y=True)
         self.resource_events_plot.getAxis('left').setTextPen('k')
         self.resource_events_plot.getAxis('bottom').setTextPen('k')
-        self.resource_events_plot.setTitle("Resource Events", color="#333", size="12pt")
+        self.resource_events_plot.setTitle("Resources & Achievements", color="#333", size="12pt")
         self.resource_events_plot.getViewBox().setDefaultPadding(0.0)
         self.resource_events_plot.getViewBox().setLimits(xMin=0)
         self.resource_events_plot.getViewBox().sigRangeChanged.connect(
@@ -1334,7 +1377,7 @@ class VisualizationWidget(QWidget):
         agent_legend_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         agent_stats_row.addWidget(agent_legend_scroll)
 
-        self.main_layout.addWidget(agent_stats_container, 7)
+        self.graph_splitter.addWidget(agent_stats_container)
 
         # --- Resource Events container (plot + its own legend) ---
         resource_events_container = QWidget()
@@ -1358,7 +1401,10 @@ class VisualizationWidget(QWidget):
         resource_legend_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         resource_events_row.addWidget(resource_legend_scroll)
 
-        self.main_layout.addWidget(resource_events_container, 7)
+        self.graph_splitter.addWidget(resource_events_container)
+
+        # Set initial proportions (6:7:7 ratio matching previous stretch factors).
+        self.graph_splitter.setSizes([300, 350, 350])
 
         # Backward-compat alias so set_data legend-clearing still works.
         self._comp_legend_vbox = self._agent_legend_vbox
@@ -1442,13 +1488,27 @@ class VisualizationWidget(QWidget):
         self.cumulative_plot.addItem(self.highlighted_region)
         self.highlighted_region.setVisible(False)
         
-        # Add current step annotation
+        # Add current step annotation to all plots
         self.current_step_text = pg.TextItem(
             text="",
             color=(200, 0, 0),
             anchor=(0.5, 0)
         )
         self.cumulative_plot.addItem(self.current_step_text)
+
+        self.agent_stats_step_text = pg.TextItem(
+            text="",
+            color=(200, 0, 0),
+            anchor=(0.5, 0)
+        )
+        self.agent_stats_plot.addItem(self.agent_stats_step_text)
+
+        self.resource_events_step_text = pg.TextItem(
+            text="",
+            color=(200, 0, 0),
+            anchor=(0.5, 0)
+        )
+        self.resource_events_plot.addItem(self.resource_events_step_text)
         
         # Set plot size policies to allow expansion
         self.cumulative_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -1712,6 +1772,8 @@ class VisualizationWidget(QWidget):
         self.agent_stats_plot.addItem(self.agent_stats_sync_line)
         self.resource_events_plot.addItem(self.resource_events_sync_line)
         self.cumulative_plot.addItem(self.current_step_text)
+        self.agent_stats_plot.addItem(self.agent_stats_step_text)
+        self.resource_events_plot.addItem(self.resource_events_step_text)
         self.cumulative_plot.addItem(self.highlighted_region)
         
         # Clear timeline legend rows (preserve title + stretch).
@@ -2083,14 +2145,25 @@ class VisualizationWidget(QWidget):
         if self.action_log and step < len(self.action_log):
             action = self.action_log[step]
             
-            # Create minimal marker for the current position
-            self.current_step_text.setHtml(
+            # Create minimal step marker on all plots
+            step_marker_html = (
                 f"<div style='background-color: rgba(255, 255, 255, 0.8); padding: 2px 5px; "
                 f"border: 1px solid #aaa; font-size: 9px;'>"
                 f"<span style='color: #000;'>{x_pos}</span>"
                 f"</div>"
             )
+            self.current_step_text.setHtml(step_marker_html)
             self.current_step_text.setPos(x_pos, self.cumulative_rewards[step])
+
+            # Agent health & vitals: position at top of the y-range (9)
+            self.agent_stats_step_text.setHtml(step_marker_html)
+            self.agent_stats_step_text.setPos(x_pos, 9.0)
+
+            # Resources & achievements: position at top of the current y-range
+            res_view = self.resource_events_plot.viewRange()
+            res_y_top = res_view[1][1] if res_view else 1.0
+            self.resource_events_step_text.setHtml(step_marker_html)
+            self.resource_events_step_text.setPos(x_pos, res_y_top * 0.9)
             
             # Update info panel with detailed state information
             if hasattr(self, 'info_panel'):
