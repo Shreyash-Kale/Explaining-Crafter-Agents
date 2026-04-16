@@ -397,7 +397,7 @@ class DreamerV2:
         model_lr=6e-4,  # Paper uses 6e-4; 3e-4 was causing slow world model learning
         kl_weight=1.0,
         kl_balance=0.8,  # Between 0 and 1, 0.5 means equal weight posterior vs prior
-        free_nats=1.0,  # Minimum KL divergence
+        free_nats=0.1,  # DreamerV2: low floor so RSSM is forced to encode observations
         model_gradient_clip=100.0,
         actor_gradient_clip=100.0,
         critic_gradient_clip=100.0,
@@ -852,41 +852,38 @@ class DreamerV2:
             reward_loss = -tf.reduce_mean(reward_dist.log_prob(flat_rewards))
             metrics['reward_loss'] = reward_loss
             
-            # Calculate KL loss with improved balancing approach
+            # DreamerV2 KL balancing: stop_gradient separates prior training from posterior training.
+            # lhs trains the prior (posterior is sg) → makes the prior predictive.
+            # rhs trains the posterior (prior is sg) → regularises the posterior.
             kl_loss = 0
             for t in range(len(all_prior_dists)):
                 prior_dist = all_prior_dists[t]
                 posterior_dist = all_posterior_dists[t]
-                
-                # Calculate KL divergence with improved balancing
-                if self.kl_balance == 0.5:
-                    kl_divergence = tfd.kl_divergence(posterior_dist, prior_dist)
-                else:
-                    # Enhanced KL balancing from original DreamerV2 implementation
-                    alpha = self.kl_balance
-                    
-                    # KL from posterior to prior (standard KL term)
-                    kl_prior = tfd.kl_divergence(posterior_dist, prior_dist)
-                    
-                    # KL from posterior to uniform distribution (entropy term)
-                    # Create uniform distribution with same shape as prior
-                    uniform_logits = tf.ones_like(prior_dist.distribution.logits) / self.discrete_classes
-                    uniform_dist = tfd.Independent(tfd.OneHotCategorical(probs=uniform_logits), 1)
-                    kl_post = tfd.kl_divergence(posterior_dist, uniform_dist)
-                    
-                    # Balanced KL divergence
-                    kl_divergence = alpha * kl_prior + (1 - alpha) * kl_post
-                
-                # Apply free bits - minimum KL to ensure some information flow
-                kl_divergence = tf.maximum(kl_divergence, self.free_nats)
-                
-                # Reduce per batch element and accumulate
+
+                alpha = self.kl_balance  # 0.8 → more weight on training the prior
+
+                sg_post_logits = tf.stop_gradient(posterior_dist.distribution.logits)
+                sg_prior_logits = tf.stop_gradient(prior_dist.distribution.logits)
+
+                sg_post_dist = tfd.Independent(tfd.OneHotCategorical(logits=sg_post_logits), 1)
+                sg_prior_dist = tfd.Independent(tfd.OneHotCategorical(logits=sg_prior_logits), 1)
+
+                # lhs: KL(sg(posterior) || prior)  — gradient flows to prior only
+                kl_lhs = tfd.kl_divergence(sg_post_dist, prior_dist)
+                # rhs: KL(posterior || sg(prior))  — gradient flows to posterior only
+                kl_rhs = tfd.kl_divergence(posterior_dist, sg_prior_dist)
+
+                # Apply free_nats separately so each term has its own floor
+                kl_lhs = tf.maximum(kl_lhs, self.free_nats)
+                kl_rhs = tf.maximum(kl_rhs, self.free_nats)
+
+                kl_divergence = alpha * kl_lhs + (1.0 - alpha) * kl_rhs
+
                 kl_loss += tf.reduce_mean(kl_divergence)
-                
-                # Log individual KL components for better analysis
-                if t == 0:  # Only log once for efficiency
-                    tf.summary.scalar('kl/prior_component', tf.reduce_mean(kl_prior), step=self.train_step)
-                    tf.summary.scalar('kl/uniform_component', tf.reduce_mean(kl_post), step=self.train_step)
+
+                if t == 0:
+                    tf.summary.scalar('kl/lhs', tf.reduce_mean(kl_lhs), step=self.train_step)
+                    tf.summary.scalar('kl/rhs', tf.reduce_mean(kl_rhs), step=self.train_step)
                     tf.summary.scalar('kl/balanced', tf.reduce_mean(kl_divergence), step=self.train_step)
 
             

@@ -27,8 +27,8 @@ if _latest_run:
     DEFAULT_LOG_DIR = os.path.join(_latest_run, 'logs')
     RESULTS_LOG_DIR = os.path.join(_latest_run, 'results')
 else:
-    DEFAULT_LOG_DIR = os.path.join(CRAFTER_DIR, 'logs')
-    RESULTS_LOG_DIR = os.path.join(CRAFTER_DIR, 'results')
+    DEFAULT_LOG_DIR = os.path.join(CRAFTER_DIR, 'data', 'eval')
+    RESULTS_LOG_DIR = os.path.join(CRAFTER_DIR, 'data', 'eval')
 
 
 # Visualization settings
@@ -58,7 +58,7 @@ DEFAULT_FPS = 30
 #   ├── reports/   — _report.txt     (human-readable timeline, qualitative review)
 #   └── analysis/  — _analysis.csv   (flat, no-JSON, for Excel / pandas)
 #
-STUDY_LOGS_BASE_DIR     = os.path.join(CRAFTER_DIR, 'study_logs')
+STUDY_LOGS_BASE_DIR     = os.path.join(CRAFTER_DIR, 'data', 'study_logs')
 STUDY_LOGS_RAW_DIR      = os.path.join(STUDY_LOGS_BASE_DIR, 'raw')
 STUDY_LOGS_REPORTS_DIR  = os.path.join(STUDY_LOGS_BASE_DIR, 'reports')
 STUDY_LOGS_ANALYSIS_DIR = os.path.join(STUDY_LOGS_BASE_DIR, 'analysis')
@@ -69,4 +69,3 @@ for _d in (STUDY_LOGS_RAW_DIR, STUDY_LOGS_REPORTS_DIR, STUDY_LOGS_ANALYSIS_DIR):
 # Create required directories if they don't exist (only for live runs)
 if not _latest_run:
     os.makedirs(DEFAULT_LOG_DIR, exist_ok=True)
-    os.makedirs(RESULTS_LOG_DIR, exist_ok=True)

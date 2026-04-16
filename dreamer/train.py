@@ -24,8 +24,8 @@ def train_dreamer(
     env_name='CrafterReward-v1',
     total_steps=250000,
     log_interval=5000,
-    checkpoint_dir='./dreamer_checkpoints',
-    log_dir='./logs_dreamer',
+    checkpoint_dir='./data/checkpoints',
+    log_dir='./data/training_logs',
     video_dir='./videos',
     load_checkpoint=False,
     num_envs=4,  # Number of parallel environments
@@ -393,7 +393,7 @@ def find_latest_checkpoint(checkpoint_dir):
     return max(checkpoint_numbers)
 
 
-def run_dreamer_episode(env_name='CrafterReward-v1', checkpoint_dir='./dreamer_checkpoints', output_dir='./logs_dreamer'):
+def run_dreamer_episode(env_name='CrafterReward-v1', checkpoint_dir='./data/checkpoints', output_dir='./data/eval'):
     """Run a visualization episode with a trained DreamerV2 agent."""
     
     # Create environment
@@ -412,7 +412,7 @@ def run_dreamer_episode(env_name='CrafterReward-v1', checkpoint_dir='./dreamer_c
         return policy(obs)
     
     # Run episode
-    results = run_episode(env, dreamer_policy_fn)
+    results = run_episode(env, dreamer_policy_fn, output_dir=output_dir)
     
     return results
 
@@ -423,9 +423,9 @@ if __name__ == "__main__":
                         help='Mode to run: train or visualize')
     parser.add_argument('--steps', type=int, default=1000000,
                         help='Total training steps')
-    parser.add_argument('--checkpoint-dir', type=str, default='./dreamer_checkpoints',
+    parser.add_argument('--checkpoint-dir', type=str, default='./data/checkpoints',
                         help='Directory for checkpoints')
-    parser.add_argument('--log-dir', type=str, default='./logs',
+    parser.add_argument('--log-dir', type=str, default='./data/training_logs',
                         help='Directory for logs')
     parser.add_argument('--load-checkpoint', action='store_true',
                         help='Load existing checkpoint')

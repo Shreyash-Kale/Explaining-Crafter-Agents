@@ -19,8 +19,8 @@ import imageio.v2 as iio
 import os
 
 # Configuration constants
-BASE_CHECKPOINT_DIR = '/Users/sirius/Desktop/Crafter/saved_checkpoints/ckpt_'
-RESULTS_DIR = './results'
+BASE_CHECKPOINT_DIR = './data/checkpoints/ckpt_'
+RESULTS_DIR = './data/eval'
 DEFAULT_NUM_EPISODES = 50
 DEFAULT_CHECKPOINT = 530000  # Default checkpoint number to use if not specified
 
@@ -59,7 +59,7 @@ def run_episode(
     env,
     policy_fn,
     max_frames: int = 1_000,
-    output_dir: str = "./results",
+    output_dir: str = "./data/eval",
     episode_id: int = 0,
     record_video: bool = True,
 ):
