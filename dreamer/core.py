@@ -1081,7 +1081,7 @@ class DreamerV2:
                 softmax = tf.nn.softmax(actor_dists.logits)
                 entropies = -tf.reduce_sum(softmax * log_softmax, axis=-1)
                 # log_prob of one-hot sampled action = log_softmax at that index
-                log_probs = tf.reduce_sum(flat_actions * log_softmax, axis=-1)
+                log_probs = tf.reduce_sum(tf.cast(flat_actions, tf.float32) * log_softmax, axis=-1)
             else:
                 entropies = actor_dists.entropy()
                 log_probs = actor_dists.log_prob(flat_actions)
