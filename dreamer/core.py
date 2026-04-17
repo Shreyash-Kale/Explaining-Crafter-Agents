@@ -200,13 +200,12 @@ class Decoder(tf.keras.Model):
         x = self.deconv3(x)  # 32x32
         x = self.deconv4(x)  # 64x64
         
-        # Scale output to [0, 255]
-        mean = (x + 0.5) * 255.0
-        
-        # Clip to valid range
-        mean = tf.clip_by_value(mean, 0, 255)
-        
-        # Create distribution
+        # Observations are normalized to [0,1] in train_model, so decoder mean
+        # must live in that range — NOT [0,255]. Previously mean was scaled by
+        # *255 while targets were /255 → log_prob per pixel ≈ -8000 and the RSSM
+        # received no meaningful reconstruction gradient.
+        mean = x + 0.5
+
         return tfd.Independent(tfd.Normal(mean, 1.0), 3)
 
 
@@ -237,6 +236,8 @@ class DenseDecoder(tf.keras.Model):
         if self.dist == 'normal':
             self.mean_layer = tf.keras.layers.Dense(np.prod(self.target_shape))
             self.std_layer = tf.keras.layers.Dense(np.prod(self.target_shape))
+        elif self.dist == 'mse':
+            self.mean_layer = tf.keras.layers.Dense(np.prod(self.target_shape))
         elif self.dist == 'binary':
             self.logit_layer = tf.keras.layers.Dense(np.prod(self.target_shape))
         elif self.dist == 'categorical':
@@ -254,13 +255,22 @@ class DenseDecoder(tf.keras.Model):
             mean = self.mean_layer(x)
             std = self.std_layer(x)
             std = tf.nn.softplus(std) + 0.1
-            
+
             # Reshape if needed
             if len(self.target_shape) > 1:
                 mean = tf.reshape(mean, [-1] + self.target_shape)
                 std = tf.reshape(std, [-1] + self.target_shape)
-                
+
             return tfd.Independent(tfd.Normal(mean, std), len(self.target_shape))
+
+        elif self.dist == 'mse':
+            # Fixed-variance Normal (paper default for reward predictor).
+            # Learnable std collapsed on sparse Crafter rewards — std grew
+            # unbounded, killing the mean's gradient.
+            mean = self.mean_layer(x)
+            if len(self.target_shape) > 1:
+                mean = tf.reshape(mean, [-1] + self.target_shape)
+            return tfd.Independent(tfd.Normal(mean, 1.0), len(self.target_shape))
         
         elif self.dist == 'binary':
             logits = self.logit_layer(x)
@@ -384,20 +394,19 @@ class DreamerV2:
         decoder_hidden_size=400,
         decoder_layers=2,
         sequence_length=50,
-        # imagination_horizon=15,
-        imagination_horizon=25,
-        gamma=0.999,  # Paper uses 0.999; 0.99 was too shortsighted for long achievement chains
+        imagination_horizon=15,  # DreamerV2 paper defaults config
+        gamma=0.99,              # DreamerV2 defaults (Crafter paper used defaults, not Atari)
         lambda_=0.95,
-        # actor_entropy=1e-4,
-        training_interval = 5, # Number of steps between training updates
-        actor_entropy=1e-4,  # Reduced from 3e-4; policy still uniform at 340K so pushing further
-        actor_grad='dynamics',  # 'reinforce' or 'dynamics'
-        actor_lr=1e-4,
-        critic_lr=1e-4,
-        model_lr=6e-4,  # Paper uses 6e-4; 3e-4 was causing slow world model learning
+        training_interval=5,     # Number of env steps between gradient updates
+        actor_entropy=1e-4,      # DreamerV2 defaults
+        actor_grad='reinforce',  # Discrete actions → REINFORCE. 'dynamics' gives zero gradient
+                                 # without a straight-through Gumbel estimator, which we don't have.
+        actor_lr=1e-4,           # DreamerV2 defaults
+        critic_lr=1e-4,          # DreamerV2 defaults
+        model_lr=3e-4,           # DreamerV2 defaults (Atari uses 2e-4; defaults config = 3e-4)
         kl_weight=1.0,
-        kl_balance=0.8,  # Between 0 and 1, 0.5 means equal weight posterior vs prior
-        free_nats=0.1,  # DreamerV2: low floor so RSSM is forced to encode observations
+        kl_balance=0.8,
+        free_nats=0.0,           # KL balancing already prevents collapse — free_nats fought it
         model_gradient_clip=100.0,
         actor_gradient_clip=100.0,
         critic_gradient_clip=100.0,
@@ -498,6 +507,7 @@ class DreamerV2:
             reward_predictor=self.reward_predictor,
             actor=self.actor,
             critic=self.critic,
+            target_critic=self.target_critic,
             model_optimizer=self.model_optimizer,
             actor_optimizer=self.actor_optimizer,
             critic_optimizer=self.critic_optimizer,
@@ -665,7 +675,7 @@ class DreamerV2:
             output_shape=[1],
             hidden_size=self.decoder_hidden_size,
             num_layers=self.decoder_num_layers,
-            dist="normal",
+            dist="mse",  # fixed \u03c3=1.0 per paper; learnable std collapsed on sparse rewards
         )
 
         # 3. policy & value networks 
@@ -683,9 +693,25 @@ class DreamerV2:
             num_layers=self.critic_num_layers,
         )
 
-        # one time warm-up so the critic is born 2048-wide 
+        # Slow/target critic (DreamerV2 paper). λ-returns are bootstrapped with
+        # this, and it tracks the online critic via soft EMA updates (τ=0.01 ≈
+        # period-100 hard copy). Prevents the critic from chasing its own tail.
+        self.target_critic = Critic(
+            hidden_size=self.critic_hidden_size,
+            num_layers=self.critic_num_layers,
+        )
+
+        # one time warm-up so the critics are born 2048-wide
         dummy_feat = tf.zeros([1, feat_dim], dtype=tf.float32)  # shape (1, 2048)
-        _ = self.critic(dummy_feat)     # establishes weight matrix [2048, …]
+        _ = self.critic(dummy_feat)
+        _ = self.target_critic(dummy_feat)
+
+        # Initialize target_critic with the same weights as the online critic.
+        for w_target, w_online in zip(
+            self.target_critic.trainable_variables,
+            self.critic.trainable_variables,
+        ):
+            w_target.assign(w_online)
 
 
     def init_state(self, batch_size=1):
@@ -1015,10 +1041,12 @@ class DreamerV2:
                 # Predict reward
                 reward_dist = self.reward_predictor(model_features)
                 reward = reward_dist.mean()
-                
-                # Predict value
-                value = self.critic(model_features)
-                
+
+                # Bootstrap value with the TARGET critic (slow, stop-gradient).
+                # Online critic is only used on flat features below for the
+                # critic regression loss. This matches DreamerV2 Algorithm 1.
+                value = self.target_critic(model_features)
+
                 # Collect imagined trajectory
                 imag_recurrent_states.append(recurrent_state)
                 imag_discrete_states.append(discrete_state)
@@ -1043,45 +1071,50 @@ class DreamerV2:
             flat_model_features = tf.concat([flat_recurrent_states, tf.cast(flat_discrete_states, tf.float32)], axis=-1)
 
             
-            # Compute action entropy for all steps
+            # Re-evaluate the policy on the stored imagined features so we can
+            # compute both entropy and log_prob of the sampled actions under
+            # the CURRENT actor parameters (gradient flows here).
             flat_actions = tf.reshape(imag_actions, [-1, self.action_size])
             actor_dists = self.actor(flat_model_features)
             if self.discrete_actions:
-                entropies = -tf.reduce_sum(
-                    tf.nn.softmax(actor_dists.logits) * 
-                    tf.nn.log_softmax(actor_dists.logits), 
-                    axis=-1)
+                log_softmax = tf.nn.log_softmax(actor_dists.logits)
+                softmax = tf.nn.softmax(actor_dists.logits)
+                entropies = -tf.reduce_sum(softmax * log_softmax, axis=-1)
+                # log_prob of one-hot sampled action = log_softmax at that index
+                log_probs = tf.reduce_sum(flat_actions * log_softmax, axis=-1)
             else:
                 entropies = actor_dists.entropy()
+                log_probs = actor_dists.log_prob(flat_actions)
 
-            # Reshape entropy to match returns
             entropies = tf.reshape(entropies, [batch_size, self.imagination_horizon])
+            log_probs = tf.reshape(log_probs, [batch_size, self.imagination_horizon])
 
-                        
-            # Compute critic targets and loss
+            # Online critic used for regression loss and as advantage baseline.
             flat_values = self.critic(flat_model_features)
             values = tf.reshape(flat_values, [batch_size, self.imagination_horizon])
-            
-            # Shape returns to match values
+
             returns = tf.stop_gradient(returns)
             critic_loss = tf.reduce_mean(0.5 * tf.square(returns - values))
             metrics['returns'] = tf.reduce_mean(returns)
             metrics['values'] = tf.reduce_mean(values)
-            
-            # Compute actor loss
+
+            # Actor loss.
+            # REINFORCE: -E[log π(a|s) · A]  where A = stop_grad(returns - values).
+            # Dynamics backprop works only with reparameterized (continuous) actions;
+            # for discrete OneHotCategorical samples the gradient is zero, which is
+            # precisely why every prior run had a uniform policy.
+            advantage = tf.stop_gradient(returns - values)
             if self.actor_grad == 'dynamics':
-                # Use dynamics backpropagation (Dreamer)
                 actor_loss = -tf.reduce_mean(returns)
             else:
-                # Use REINFORCE gradient (DreamerV2)
-                advantage = tf.stop_gradient(returns - values)
-                actor_loss = -tf.reduce_mean(entropies * advantage)
-            
-            # Add entropy regularization
+                actor_loss = -tf.reduce_mean(log_probs * advantage)
+
+            # Entropy regularization (encourage exploration).
             actor_loss -= self.actor_entropy * tf.reduce_mean(entropies)
-            
-            # Track entropy
+
             metrics['entropy'] = tf.reduce_mean(entropies)
+            metrics['log_prob'] = tf.reduce_mean(log_probs)
+            metrics['advantage'] = tf.reduce_mean(advantage)
         
         # Get actor variables
         actor_vars = self.actor.trainable_variables
@@ -1102,7 +1135,15 @@ class DreamerV2:
         # Apply gradients
         self.actor_optimizer.apply_gradients(zip(actor_grads, actor_vars))
         self.critic_optimizer.apply_gradients(zip(critic_grads, critic_vars))
-        
+
+        # Soft-update target critic (τ=0.01 ≈ period-100 hard copy on average).
+        tau = 0.01
+        for w_target, w_online in zip(
+            self.target_critic.trainable_variables,
+            self.critic.trainable_variables,
+        ):
+            w_target.assign(w_target * (1.0 - tau) + w_online * tau)
+
         return actor_loss, critic_loss, metrics, {}
     
     def compute_return(self, rewards, values, gamma, lambda_):
