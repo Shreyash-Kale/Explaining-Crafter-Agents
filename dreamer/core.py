@@ -398,11 +398,14 @@ class DreamerV2:
         gamma=0.99,              # DreamerV2 defaults (Crafter paper used defaults, not Atari)
         lambda_=0.95,
         training_interval=5,     # Number of env steps between gradient updates
-        actor_entropy=1e-4,      # DreamerV2 defaults
+        actor_entropy=1e-3,      # DreamerV2 paper default; 1e-4 collapses REINFORCE to single action
         actor_grad='reinforce',  # Discrete actions → REINFORCE. 'dynamics' gives zero gradient
                                  # without a straight-through Gumbel estimator, which we don't have.
-        actor_lr=1e-4,           # DreamerV2 defaults
-        critic_lr=1e-4,          # DreamerV2 defaults
+        actor_lr=8e-5,           # DreamerV2 defaults (non-Atari). 1e-4 made REINFORCE updates
+                                 # too large relative to actor_entropy=1e-3 → policy collapsed
+                                 # to a single action after ~300k steps.
+        critic_lr=8e-5,          # DreamerV2 defaults (non-Atari). Matched to actor_lr so the
+                                 # value baseline doesn't race ahead of the policy.
         model_lr=3e-4,           # DreamerV2 defaults (Atari uses 2e-4; defaults config = 3e-4)
         kl_weight=1.0,
         kl_balance=0.8,
