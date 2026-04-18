@@ -395,18 +395,20 @@ class DreamerV2:
         decoder_layers=2,
         sequence_length=50,
         imagination_horizon=15,  # DreamerV2 paper defaults config
-        gamma=0.99,              # DreamerV2 defaults (Crafter paper used defaults, not Atari)
+        gamma=0.999,             # Crafter override (configs.yaml): sparse-reward chains need long horizon.
         lambda_=0.95,
         training_interval=5,     # Number of env steps between gradient updates
-        actor_entropy=1e-3,      # DreamerV2 paper default; 1e-4 collapses REINFORCE to single action
+        actor_entropy=3e-3,      # Crafter override (configs.yaml). 1e-3 (defaults value) is too weak:
+                                 # REINFORCE logits sharpen faster than entropy bonus can push back,
+                                 # policy collapses to a single action within ~300k steps.
         actor_grad='reinforce',  # Discrete actions → REINFORCE. 'dynamics' gives zero gradient
                                  # without a straight-through Gumbel estimator, which we don't have.
-        actor_lr=8e-5,           # DreamerV2 defaults (non-Atari). 1e-4 made REINFORCE updates
-                                 # too large relative to actor_entropy=1e-3 → policy collapsed
-                                 # to a single action after ~300k steps.
-        critic_lr=8e-5,          # DreamerV2 defaults (non-Atari). Matched to actor_lr so the
-                                 # value baseline doesn't race ahead of the policy.
-        model_lr=3e-4,           # DreamerV2 defaults (Atari uses 2e-4; defaults config = 3e-4)
+        actor_lr=1e-4,           # Crafter override (configs.yaml). Defaults are 8e-5, but Crafter
+                                 # bumps to 1e-4; the entropy bonus at 3e-3 is strong enough to hold.
+        critic_lr=1e-4,          # Crafter override (configs.yaml). Defaults are 2e-4; Crafter = 1e-4.
+        model_lr=1e-4,           # Crafter override (configs.yaml). Defaults are 3e-4 (Atari 2e-4);
+                                 # Crafter drops to 1e-4 to keep the world model from over-fitting
+                                 # early noisy rollouts under sparse rewards.
         kl_weight=1.0,
         kl_balance=0.8,
         free_nats=0.0,           # KL balancing already prevents collapse — free_nats fought it
@@ -508,6 +510,7 @@ class DreamerV2:
             rssm=self.rssm,
             decoder=self.decoder,
             reward_predictor=self.reward_predictor,
+            discount_predictor=self.discount_predictor,
             actor=self.actor,
             critic=self.critic,
             target_critic=self.target_critic,
@@ -679,6 +682,17 @@ class DreamerV2:
             hidden_size=self.decoder_hidden_size,
             num_layers=self.decoder_num_layers,
             dist="mse",  # fixed \u03c3=1.0 per paper; learnable std collapsed on sparse rewards
+        )
+
+        # Discount (episode-continuation) predictor. Crafter config: pred_discount=True,
+        # dist=binary. Trained with BCE against (1 - done); used at imagination time to
+        # bootstrap lambda-returns with per-step gamma * P(continue) instead of a hard
+        # zero at the horizon end.
+        self.discount_predictor = DenseDecoder(
+            output_shape=[1],
+            hidden_size=self.decoder_hidden_size,
+            num_layers=self.decoder_num_layers,
+            dist="binary",
         )
 
         # 3. policy & value networks 
@@ -880,6 +894,13 @@ class DreamerV2:
             reward_dist = self.reward_predictor(model_features)
             reward_loss = -tf.reduce_mean(reward_dist.log_prob(flat_rewards))
             metrics['reward_loss'] = reward_loss
+
+            # Predict discount (episode-continuation) flags. Target = (1 - done).
+            # BCE loss via Bernoulli log_prob. Same model_features used by reward head.
+            flat_continues = tf.reshape(1.0 - dones[:, :-1], [-1, 1])
+            discount_dist = self.discount_predictor(model_features)
+            discount_loss = -tf.reduce_mean(discount_dist.log_prob(flat_continues))
+            metrics['discount_loss'] = discount_loss
             
             # DreamerV2 KL balancing: stop_gradient separates prior training from posterior training.
             # lhs trains the prior (posterior is sg) → makes the prior predictive.
@@ -920,15 +941,16 @@ class DreamerV2:
             kl_loss /= len(all_prior_dists)
             metrics['kl_loss'] = kl_loss
             
-            # Combine losses
-            model_loss = obs_loss + reward_loss + self.kl_weight * kl_loss
+            # Combine losses (loss_scales.discount = 1.0 per Crafter config).
+            model_loss = obs_loss + reward_loss + discount_loss + self.kl_weight * kl_loss
             
         # Compute gradients and update model
         model_vars = (
-            self.encoder.trainable_variables + 
-            self.rssm.trainable_variables + 
-            self.decoder.trainable_variables + 
-            self.reward_predictor.trainable_variables
+            self.encoder.trainable_variables +
+            self.rssm.trainable_variables +
+            self.decoder.trainable_variables +
+            self.reward_predictor.trainable_variables +
+            self.discount_predictor.trainable_variables
         )
         
         model_grads = tape.gradient(model_loss, model_vars)
@@ -994,6 +1016,7 @@ class DreamerV2:
             imag_actions = []
             imag_rewards = []
             imag_values = []
+            imag_discounts = []
             
             # Get initial states
             init_recurrent_state = tf.gather_nd(
@@ -1050,12 +1073,17 @@ class DreamerV2:
                 # critic regression loss. This matches DreamerV2 Algorithm 1.
                 value = self.target_critic(model_features)
 
+                # Predict per-step continue probability P(not done). Used below
+                # to dampen lambda-returns across imagined episode boundaries.
+                discount = self.discount_predictor(model_features).mean()
+
                 # Collect imagined trajectory
                 imag_recurrent_states.append(recurrent_state)
                 imag_discrete_states.append(discrete_state)
                 imag_actions.append(action)
                 imag_rewards.append(reward)
                 imag_values.append(value)
+                imag_discounts.append(discount)
             
             # Stack imagined trajectory
             imag_recurrent_states = tf.stack(imag_recurrent_states, axis=1)
@@ -1063,9 +1091,14 @@ class DreamerV2:
             imag_actions = tf.stack(imag_actions, axis=1)
             imag_rewards = tf.stack(imag_rewards, axis=1)
             imag_values = tf.stack(imag_values, axis=1)
-            
-            # Compute lambda returns
-            returns = self.compute_return(imag_rewards, imag_values, self.gamma, self.lambda_)
+            imag_discounts = tf.stack(imag_discounts, axis=1)
+
+            # Compute lambda returns, dampened by per-step predicted continue-probability
+            # so bootstrapping dies at imagined episode ends (matches DreamerV2 Algorithm 1).
+            returns = self.compute_return(
+                imag_rewards, imag_values, self.gamma, self.lambda_,
+                discounts=imag_discounts,
+            )
             
             # Model features for actor and critic loss
             flat_recurrent_states = tf.reshape(imag_recurrent_states, [-1, self.recurrent_state_size])
@@ -1149,32 +1182,36 @@ class DreamerV2:
 
         return actor_loss, critic_loss, metrics, {}
     
-    def compute_return(self, rewards, values, gamma, lambda_):
-        """Compute lambda returns."""
+    def compute_return(self, rewards, values, gamma, lambda_, discounts=None):
+        """Compute lambda returns with per-step continue probability.
 
-        # Squeeze rewards to match the shape of values
-        rewards = tf.squeeze(rewards, axis=-1)    
+        If `discounts` is provided (shape matches values), effective discount at
+        each step becomes gamma * discount_pred, so bootstrapping dies when the
+        world model believes the episode terminated.
+        """
+        # Collapse all trailing singleton dims so shapes are strictly [B, T].
+        rewards = tf.reshape(rewards, rewards.shape[:2])
+        values = tf.reshape(values, values.shape[:2])
 
-        # Compute GAE (Generalized Advantage Estimation)
-        next_values = tf.concat([values[:, 1:], tf.zeros_like(values[:, :1])], axis=1)
-        delta = rewards + gamma * next_values - values
-        advantage = delta
-        
-        # Compute lambda return using GAE
+        # Effective per-step discount factor.
+        if discounts is not None:
+            disc = gamma * tf.reshape(discounts, discounts.shape[:2])
+        else:
+            disc = gamma * tf.ones_like(values)
+
+        # Bootstrap beyond imagination horizon using the last imagined value
+        # (not a hard zero — that systematically under-estimates returns).
+        next_values = tf.concat([values[:, 1:], values[:, -1:]], axis=1)
+        delta = rewards + disc * next_values - values
+
+        # Lambda-return via GAE with per-step discount.
         returns = []
+        advantage = tf.zeros_like(delta[:, 0])
         for t in range(delta.shape[1] - 1, -1, -1):
-            if t == delta.shape[1] - 1:
-                returns.append(delta[:, t])
-            else:
-                returns.append(delta[:, t] + gamma * lambda_ * advantage)
-            advantage = returns[-1]
-        
-        # Reverse the list and stack
+            advantage = delta[:, t] + disc[:, t] * lambda_ * advantage
+            returns.append(advantage)
         returns = tf.stack(returns[::-1], axis=1)
-        
-        # Add value to get full returns
         returns = returns + values
-        
         return returns
     
     def save(self, step=None):
