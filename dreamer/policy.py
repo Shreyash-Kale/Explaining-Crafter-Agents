@@ -307,35 +307,48 @@ class DreamerPolicy:
         self.agent.init_state()
     
     
-    def __call__(self, obs):
-        """Generate an action based on observation."""
+    def __call__(self, obs, expl_amount=0.1):
+        """Generate an action based on observation.
+
+        expl_amount: fraction of env steps that take a uniformly random action
+        regardless of the actor output (epsilon-greedy floor). Keeps the replay
+        buffer diverse even when the actor collapses to a small action set.
+        Only applied during training; eval always uses the actor.
+        """
         # Store current observation
         self.current_obs = obs
-        
+
         # Get action and updated states from DreamerV2 agent
         action_tensor, recurrent_state, discrete_state = self.agent.policy(
-            obs, 
+            obs,
             recurrent_state=self.agent.recurrent_state,
             discrete_state=self.agent.discrete_state,
             training=self.training
         )
-        
+
         # Update the agent's state for next time
         self.agent.recurrent_state = recurrent_state
         self.agent.discrete_state = discrete_state
-        
+
         # Convert to numpy for environment interaction
         action_np = action_tensor.numpy()
-        
+
         # For Crafter environment, convert to a simple integer
         if self.agent.discrete_actions:
-            # Handle different possible shapes
             if isinstance(action_np, np.ndarray):
                 if action_np.size == 1:
-                    action_np = action_np.item()  # Convert single-element array to scalar
+                    action_np = action_np.item()
                 else:
-                    action_np = np.argmax(action_np)  # Get the index of max value
-        
+                    action_np = np.argmax(action_np)
+
+        # Epsilon-greedy exploration: override with a uniform random action
+        # expl_amount fraction of the time during training. This ensures the
+        # replay buffer stays diverse even after actor collapse, breaking the
+        # feedback loop where a collapsed policy starves the world model of
+        # varied transitions.
+        if self.training and expl_amount > 0 and np.random.random() < expl_amount:
+            action_np = int(np.random.randint(0, self.agent.action_size))
+
         return action_np
 
     
