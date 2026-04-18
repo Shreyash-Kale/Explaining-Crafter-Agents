@@ -259,8 +259,8 @@ def train_dreamer(
         if step_count % 10000 < num_envs and hasattr(policy, 'agent'):
             try:
                 agent = policy.agent
-                obs_sample = tf.cast(observations[0][None], tf.float32) / 255.0
-                embed = agent.encoder(obs_sample)
+                obs_raw = tf.cast(observations[0][None], tf.float32)  # [0,255]; encoder normalises internally
+                embed = agent.encoder(obs_raw)
                 rec_state, rec_discrete, _, _ = agent.rssm.observe(
                     embed,
                     tf.zeros([1, agent.action_size], dtype=tf.float32),
@@ -269,13 +269,13 @@ def train_dreamer(
                 feat = tf.concat([rec_state,
                                   tf.reshape(rec_discrete, [1, -1])], axis=-1)
                 recon = agent.decoder(feat).mean()[0].numpy()       # (64,64,3) in [0,1]
-                orig  = (obs_sample[0].numpy())                     # (64,64,3) in [0,1]
+                orig  = (obs_raw[0].numpy() / 255.0)               # (64,64,3) in [0,1]
                 side_by_side = np.concatenate([orig, recon], axis=1)
                 import imageio
                 out_path = os.path.join(log_dir, f'recon_{step_count:07d}.png')
                 imageio.imwrite(out_path, (side_by_side * 255).astype(np.uint8))
             except Exception as _e:
-                pass  # non-fatal; don't crash training
+                print(f'[recon] {_e}', flush=True)  # surface errors without crashing training
 
         # Log statistics periodically
         if step_count % log_interval < num_envs:
