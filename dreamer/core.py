@@ -200,13 +200,12 @@ class Decoder(tf.keras.Model):
         x = self.deconv3(x)  # 32x32
         x = self.deconv4(x)  # 64x64
         
-        # Observations are normalized to [0,1] in train_model, so decoder mean
-        # must live in that range — NOT [0,255]. Previously mean was scaled by
-        # *255 while targets were /255 → log_prob per pixel ≈ -8000 and the RSSM
-        # received no meaningful reconstruction gradient.
-        mean = x + 0.5
+        # Sigmoid constrains mean to (0,1), matching /255-normalised targets.
+        # σ=0.1 tightens the reconstruction loss so gradients are meaningful
+        # even when the prediction is only slightly off.
+        mean = tf.sigmoid(x)
 
-        return tfd.Independent(tfd.Normal(mean, 1.0), 3)
+        return tfd.Independent(tfd.Normal(mean, 0.1), 3)
 
 
 class DenseDecoder(tf.keras.Model):
@@ -411,7 +410,9 @@ class DreamerV2:
                                  # early noisy rollouts under sparse rewards.
         kl_weight=1.0,
         kl_balance=0.8,
-        free_nats=0.0,           # KL balancing already prevents collapse — free_nats fought it
+        free_nats=1.0,           # DreamerV2/Crafter default. Forces encoder to encode signal
+                                 # even when the prior is a good match; removing it let the
+                                 # posterior trivially match the prior → world model learned nothing.
         model_gradient_clip=100.0,
         actor_gradient_clip=100.0,
         critic_gradient_clip=100.0,
@@ -553,10 +554,12 @@ class DreamerV2:
     
     def log_metrics(self, metrics, step=None):
         """Enhanced logging with component-level metrics."""
-        step = step or self.train_step
-        
+        # Use global_step (tf.Variable) so tensorboard plots are step-aligned
+        # even when called from inside @tf.function traced code.
+        gs = self.global_step
+        step = step if step is not None else int(gs.numpy())
+
         with self.summary_writer.as_default():
-            # Log model metrics
             for key, value in metrics.items():
                 if isinstance(value, tf.Tensor):
                     value = value.numpy()
@@ -932,9 +935,9 @@ class DreamerV2:
                 kl_loss += tf.reduce_mean(kl_divergence)
 
                 if t == 0:
-                    tf.summary.scalar('kl/lhs', tf.reduce_mean(kl_lhs), step=self.train_step)
-                    tf.summary.scalar('kl/rhs', tf.reduce_mean(kl_rhs), step=self.train_step)
-                    tf.summary.scalar('kl/balanced', tf.reduce_mean(kl_divergence), step=self.train_step)
+                    tf.summary.scalar('kl/lhs', tf.reduce_mean(kl_lhs), step=self.global_step)
+                    tf.summary.scalar('kl/rhs', tf.reduce_mean(kl_rhs), step=self.global_step)
+                    tf.summary.scalar('kl/balanced', tf.reduce_mean(kl_divergence), step=self.global_step)
 
             
             # Average over time

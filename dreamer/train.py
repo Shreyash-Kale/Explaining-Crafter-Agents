@@ -254,16 +254,57 @@ def train_dreamer(
         # Increment step count
         step_count += num_envs
         
+        # Decoder reconstruction check every 10k steps — saves a side-by-side
+        # PNG so you can visually confirm the world model is learning.
+        if step_count % 10000 < num_envs and hasattr(policy, 'agent'):
+            try:
+                agent = policy.agent
+                obs_sample = tf.cast(observations[0][None], tf.float32) / 255.0
+                embed = agent.encoder(obs_sample)
+                rec_state, rec_discrete, _, _ = agent.rssm.observe(
+                    embed,
+                    tf.zeros([1, agent.action_size], dtype=tf.float32),
+                    *agent.rssm.initial_state(1)
+                )
+                feat = tf.concat([rec_state,
+                                  tf.reshape(rec_discrete, [1, -1])], axis=-1)
+                recon = agent.decoder(feat).mean()[0].numpy()       # (64,64,3) in [0,1]
+                orig  = (obs_sample[0].numpy())                     # (64,64,3) in [0,1]
+                side_by_side = np.concatenate([orig, recon], axis=1)
+                import imageio
+                out_path = os.path.join(log_dir, f'recon_{step_count:07d}.png')
+                imageio.imwrite(out_path, (side_by_side * 255).astype(np.uint8))
+            except Exception as _e:
+                pass  # non-fatal; don't crash training
+
         # Log statistics periodically
         if step_count % log_interval < num_envs:
             # Flatten the episode rewards from all envs
             all_rewards = [reward for env_rewards in episode_rewards for reward in env_rewards[-10:]]
             all_lengths = [length for env_lengths in episode_lengths for length in env_lengths[-10:]]
-            
+
+            # Step-gated CSV — write even if no episode has completed yet.
+            # Avoids the "short run = no log" problem when episodes are long.
+            avg_reward  = sum(all_rewards) / len(all_rewards) if all_rewards else float('nan')
+            avg_length  = sum(all_lengths) / len(all_lengths) if all_lengths else float('nan')
+            metrics_dict = {'step': step_count, 'avg_reward': avg_reward, 'avg_length': avg_length}
+            for component, values in all_env_metrics['reward_components'].items():
+                nv = [v for v in values[-100:] if isinstance(v, (int, float))]
+                if nv:
+                    metrics_dict[f'component_{component}'] = sum(nv) / len(nv)
+            for achievement, achieved in all_env_metrics['achievements'].items():
+                if achieved:
+                    metrics_dict[f'achievement_{achievement}'] = sum(achieved[-100:])
+            metrics_df = pd.DataFrame([metrics_dict])
+            if os.path.exists(csv_path):
+                metrics_df.to_csv(csv_path, mode='a', header=False, index=False)
+            else:
+                metrics_df.to_csv(csv_path, index=False)
+
             if all_rewards:
                 avg_reward = sum(all_rewards) / len(all_rewards)
                 avg_length = sum(all_lengths) / len(all_lengths)
-                
+
                 # Log to file
                 with open(os.path.join(log_dir, 'dreamer_training.txt'), 'a') as f:
                     f.write(f"Step {step_count}, Avg Reward: {avg_reward:.2f}, Avg Length: {avg_length:.1f}\n")
@@ -344,34 +385,6 @@ def train_dreamer(
                 plt.tight_layout()
                 plt.savefig(os.path.join(log_dir, 'dreamer_training_metrics.png'))
                 plt.close()
-                
-                # Save metrics to CSV
-                metrics_dict = {
-                    'step': step_count,
-                    'avg_reward': avg_reward,
-                    'avg_length': avg_length
-                }
-                
-                # Add reward components
-                for component, values in all_env_metrics['reward_components'].items():
-                    if values:
-                        numeric_values = [v for v in values[-100:] if isinstance(v, (int, float))]
-                        if numeric_values:
-                            metrics_dict[f'component_{component}'] = sum(numeric_values) / len(numeric_values)
-
-                # Add achievement counts
-                for achievement, achieved in all_env_metrics['achievements'].items():
-                    if achieved:
-                        metrics_dict[f'achievement_{achievement}'] = sum(achieved[-100:])
-                
-                # Convert to DataFrame
-                metrics_df = pd.DataFrame([metrics_dict])
-                
-                # Append or create CSV
-                if os.path.exists(csv_path):
-                    metrics_df.to_csv(csv_path, mode='a', header=False, index=False)
-                else:
-                    metrics_df.to_csv(csv_path, index=False)
     
     print("Training complete!")
     return policy
