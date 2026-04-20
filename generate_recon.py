@@ -11,10 +11,12 @@ import argparse
 import os
 import sys
 
+os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
+
 import numpy as np
 import tensorflow as tf
 import imageio
-import gymnasium as gym
+import gym
 import crafter
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -23,7 +25,8 @@ from dreamer.core import DreamerV2
 
 def generate(checkpoint_dir: str, out_path: str) -> None:
     env = gym.make('CrafterReward-v1')
-    obs, _ = env.reset()
+    reset_result = env.reset()
+    obs = reset_result[0] if isinstance(reset_result, tuple) else reset_result
 
     agent = DreamerV2(
         observation_space=env.observation_space,
@@ -53,7 +56,7 @@ def generate(checkpoint_dir: str, out_path: str) -> None:
         tf.zeros([1, agent.action_size], dtype=tf.float32),
         *agent.rssm.initial_state(1),
     )
-    feat = tf.concat([rec_state, tf.reshape(rec_discrete, [1, -1])], axis=-1)
+    feat = tf.concat([rec_state, tf.cast(tf.reshape(rec_discrete, [1, -1]), tf.float32)], axis=-1)
     recon = agent.decoder(feat).mean()[0].numpy()      # (64,64,3) in [0,1]
     orig  = obs_raw[0].numpy() / 255.0                 # (64,64,3) in [0,1]
 
