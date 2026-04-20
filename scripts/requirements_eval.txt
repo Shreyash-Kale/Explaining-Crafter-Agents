@@ -1,0 +1,16 @@
+# Minimal requirements for running evaluation on a lab PC (Linux/Windows)
+# Install with: pip install -r scripts/requirements_eval.txt
+
+# On macOS Apple Silicon replace the two tensorflow lines with:
+#   tensorflow-macos==2.16.1
+#   tensorflow==2.16.1
+tensorflow==2.16.1
+tf-keras==2.16.0
+tensorflow-probability==0.24.0
+
+gym==0.25.2
+numpy==1.23.5
+pandas==2.2.3
+opencv-python==4.11.0.86
+imageio==2.37.0
+crafter==1.8.3

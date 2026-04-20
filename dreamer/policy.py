@@ -181,6 +181,7 @@ class DreamerPolicy:
             action_space=env.action_space,
             checkpoint_dir=checkpoint_dir,
             load_checkpoint=load_checkpoint,
+            training=training,
         )
         
         # Add global step tracking

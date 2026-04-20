@@ -418,7 +418,8 @@ class DreamerV2:
         critic_gradient_clip=100.0,
         training_steps=1,
         checkpoint_dir='./checkpoints',
-        load_checkpoint=False
+        load_checkpoint=False,
+        training=True
     ):
         self.device = device
         self.observation_space = observation_space
@@ -453,6 +454,7 @@ class DreamerV2:
         self.training_steps = training_steps
         self.checkpoint_dir = checkpoint_dir
         self.load_checkpoint = load_checkpoint
+        self.training = training
         
         # Determine if actions are discrete or continuous
         self.discrete_actions = hasattr(self.action_space, 'n')
@@ -542,18 +544,23 @@ class DreamerV2:
                     print("Could not infer global_step from checkpoint name")
 
 
-        # Add training step counter for TensorBoard
+        # Add training step counter for TensorBoard (training only)
         self.train_step = 0
-        
-        # Add TensorBoard writer
-        current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        self.summary_writer = tf.summary.create_file_writer(
-            os.path.join(self.checkpoint_dir, 'tensorboard', current_time)
-        )
+
+        # Add TensorBoard writer (training only)
+        if self.training:
+            current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            self.summary_writer = tf.summary.create_file_writer(
+                os.path.join(self.checkpoint_dir, 'tensorboard', current_time)
+            )
+        else:
+            self.summary_writer = None
 
     
     def log_metrics(self, metrics, step=None):
         """Enhanced logging with component-level metrics."""
+        if not self.training or self.summary_writer is None:
+            return
         # Use global_step (tf.Variable) so tensorboard plots are step-aligned
         # even when called from inside @tf.function traced code.
         gs = self.global_step
