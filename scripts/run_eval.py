@@ -5,10 +5,19 @@ and saves per-episode CSVs, videos, and stats.jsonl files.
 Designed to run on a lab PC (Linux/Windows) after copying over this repo + a checkpoint.
 
 Usage:
+    # Use the latest (highest-step) checkpoint in the folder:
     python scripts/run_eval.py \
-        --checkpoint-dir data/checkpoints/ckpt_470000 \
+        --checkpoint-dir data/checkpoints/ckpt_750000 \
         --num-episodes 50 \
-        --out-dir data/eval
+        --out-dir data/eval \
+        --no-video
+
+    # Target a specific step inside the folder (e.g. 660000 instead of 750000):
+    python scripts/run_eval.py \
+        --checkpoint-dir data/checkpoints/ckpt_750000 \
+        --checkpoint-step 660000 \
+        --num-episodes 50 \
+        --no-video
 
 After running, use scripts/find_best_episode.py to rank results.
 """
@@ -40,14 +49,23 @@ def find_latest_checkpoint(checkpoint_dir: str) -> int | None:
     return max(steps)
 
 
-def run(checkpoint_dir: str, num_episodes: int, out_dir: str, record_video: bool):
+def run(checkpoint_dir: str, num_episodes: int, out_dir: str, record_video: bool, checkpoint_step: int | None = None):
     from dreamer.env import create_environment, run_episode
     from dreamer.policy import DreamerPolicy
 
     ckpt_dir = Path(checkpoint_dir)
-    checkpoint_step = find_latest_checkpoint(str(ckpt_dir))
+
+    if checkpoint_step is None:
+        checkpoint_step = find_latest_checkpoint(str(ckpt_dir))
     if checkpoint_step is None:
         print(f"[error] No checkpoints found in {ckpt_dir}")
+        sys.exit(1)
+
+    # Verify the requested step actually exists
+    if not (ckpt_dir / f"ckpt-{checkpoint_step}.index").exists():
+        available = [int(re.search(r"ckpt-(\d+)", f.name).group(1))
+                     for f in ckpt_dir.glob("ckpt-*.index")]
+        print(f"[error] Step {checkpoint_step} not found. Available: {sorted(available)}")
         sys.exit(1)
 
     print(f"Checkpoint dir : {ckpt_dir}")
@@ -97,6 +115,10 @@ def main():
     parser.add_argument("--num-episodes", type=int, default=50)
     parser.add_argument("--out-dir", default="data/eval", help="Root output directory")
     parser.add_argument("--no-video", action="store_true", help="Skip MP4 recording")
+    parser.add_argument(
+        "--checkpoint-step", type=int, default=None,
+        help="Specific step to load (e.g. 660000). Defaults to the highest step in the folder."
+    )
     args = parser.parse_args()
 
     run(
@@ -104,6 +126,7 @@ def main():
         num_episodes=args.num_episodes,
         out_dir=args.out_dir,
         record_video=not args.no_video,
+        checkpoint_step=args.checkpoint_step,
     )
 
 
