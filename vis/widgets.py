@@ -1147,6 +1147,10 @@ class VisualizationWidget(QWidget):
         self.setGeometry(100, 100, 1200, 800)
         self.frame_offset = 1 
 
+        # Must be initialized before init_ui() because signals connect callbacks
+        # that call _emit_interaction, which reads this dict immediately on first range event
+        self._last_interaction_emit = {}
+
         # Initialize the UI
         self.main_layout = QVBoxLayout(self)
         self.init_ui()
