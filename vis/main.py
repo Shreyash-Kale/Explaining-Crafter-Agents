@@ -381,11 +381,20 @@ class MainWindow(QMainWindow):
     def open_random_files(self):
         """Randomly select only a validated CSV/MP4 pair from logs."""
 
-        if not os.path.isdir(DEFAULT_LOG_DIR):
-            print(f"Logs directory not found: {DEFAULT_LOG_DIR}")
-            return
+        candidate_roots = [
+            DEFAULT_LOG_DIR,
+            RESULTS_LOG_DIR,
+            os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "checkpoints"),
+        ]
 
-        pairs = self._build_valid_log_video_pairs(DEFAULT_LOG_DIR)
+        pairs = []
+        for root in candidate_roots:
+            if not os.path.isdir(root):
+                continue
+            pairs = self._build_valid_log_video_pairs(root)
+            if pairs:
+                break
+
         if not pairs:
             print("No validated CSV/MP4 pairs found in logs directory.")
             return
@@ -448,20 +457,28 @@ class MainWindow(QMainWindow):
         """Build CSV/MP4 pairs using timestamp matching and strict filtering."""
 
         pairs = []
-        for filename in os.listdir(log_dir):
-            if not filename.endswith('.csv'):
-                continue
-            csv_path = os.path.join(log_dir, filename)
-
-            base_name = os.path.splitext(filename)[0]
-            base_video = os.path.join(log_dir, f"{base_name}.mp4")
-            if os.path.exists(base_video):
-                pairs.append((csv_path, base_video))
+        for root, _dirs, files in os.walk(log_dir):
+            csv_files = [f for f in files if f.endswith('.csv')]
+            if not csv_files:
                 continue
 
-            matched_video = self._find_matching_video_for_csv(csv_path, log_dir)
-            if matched_video:
-                pairs.append((csv_path, matched_video))
+            mp4_files = [f for f in files if f.endswith('.mp4')]
+            for filename in csv_files:
+                csv_path = os.path.join(root, filename)
+
+                base_name = os.path.splitext(filename)[0]
+                base_video = os.path.join(root, f"{base_name}.mp4")
+                if os.path.exists(base_video):
+                    pairs.append((csv_path, base_video))
+                    continue
+
+                matched_video = self._find_matching_video_for_csv(csv_path, root)
+                if matched_video:
+                    pairs.append((csv_path, matched_video))
+                    continue
+
+                if len(mp4_files) == 1:
+                    pairs.append((csv_path, os.path.join(root, mp4_files[0])))
 
         return pairs
 
@@ -971,7 +988,24 @@ class MainWindow(QMainWindow):
             print(f"  analysis CSV failed: {e}")
 
 if __name__ == "__main__":
+    # Improve readability across displays with different DPI/scale settings.
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+
     app = QApplication(sys.argv)
+
+    # Optional manual scale override, e.g. VIS_UI_SCALE=1.2
+    ui_scale_raw = os.getenv("VIS_UI_SCALE", "").strip()
+    if ui_scale_raw:
+        try:
+            ui_scale = max(0.8, min(2.0, float(ui_scale_raw)))
+            font = app.font()
+            base_size = font.pointSizeF() if font.pointSizeF() > 0 else 10.0
+            font.setPointSizeF(base_size * ui_scale)
+            app.setFont(font)
+        except ValueError:
+            pass
+
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())

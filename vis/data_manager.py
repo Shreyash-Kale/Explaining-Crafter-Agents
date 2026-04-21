@@ -196,6 +196,10 @@ class DataManager:
             def _norm(arr):
                 arr = np.asarray(arr, dtype=np.float32)
                 if arr.size == 0 or np.max(arr) == np.min(arr):
+                    # Preserve constant non-zero signals (e.g., action_probability=1.0)
+                    # so they remain visible as flat lines in the decision plot.
+                    if arr.size and not np.isclose(float(arr[0]), 0.0):
+                        return np.ones_like(arr)
                     return np.zeros_like(arr)
                 return (arr - arr.min()) / (arr.max() - arr.min())
 

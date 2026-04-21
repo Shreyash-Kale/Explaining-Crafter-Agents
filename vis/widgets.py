@@ -834,29 +834,40 @@ class DecisionAttribPlot(QWidget):
             ("Action probability", "action_probability", self.dm.get_action_prob_norm()),
         ]
 
-        ppo_ok = (len(self.dm.get_ppo_entropy_norm()) == len(x) and np.any(self.dm.get_ppo_entropy_norm()))
-        dr_ok = (len(self.dm.get_dreamer_explore_norm()) == len(x) and np.any(self.dm.get_dreamer_explore_norm()))
+        ppo_entropy = self.dm.get_ppo_entropy_norm()
+        ppo_advantage = self.dm.get_ppo_advantage_norm()
+        dreamer_explore = self.dm.get_dreamer_explore_norm()
+        dreamer_wm = self.dm.get_dreamer_wm_score_norm()
+
+        ppo_entropy_ok = (len(ppo_entropy) == len(x) and np.isfinite(np.asarray(ppo_entropy)).any())
+        ppo_advantage_ok = (len(ppo_advantage) == len(x) and np.isfinite(np.asarray(ppo_advantage)).any())
+        dr_explore_ok = (len(dreamer_explore) == len(x) and np.isfinite(np.asarray(dreamer_explore)).any())
+        dr_wm_ok = (len(dreamer_wm) == len(x) and np.isfinite(np.asarray(dreamer_wm)).any())
+
+        ppo_ok = ppo_entropy_ok or ppo_advantage_ok
+        dr_ok = dr_explore_ok or dr_wm_ok
 
         if ppo_ok:
-            curves += [
-                ("PPO entropy", "ppo_entropy", self.dm.get_ppo_entropy_norm()),
-                ("PPO advantage", "ppo_advantage", self.dm.get_ppo_advantage_norm()),
-            ]
+            if ppo_entropy_ok:
+                curves.append(("PPO entropy", "ppo_entropy", ppo_entropy))
+            if ppo_advantage_ok:
+                curves.append(("PPO advantage", "ppo_advantage", ppo_advantage))
         elif dr_ok:
-            curves += [
-                ("Exploration bonus", "exploration_bonus", self.dm.get_dreamer_explore_norm()),
-                ("World-model score", "world_model_score", self.dm.get_dreamer_wm_score_norm()),
-            ]
+            if dr_explore_ok:
+                curves.append(("Exploration bonus", "exploration_bonus", dreamer_explore))
+            if dr_wm_ok:
+                curves.append(("World-model score", "world_model_score", dreamer_wm))
 
         self._add_legend_section("Signals")
         decision_color_idx = 0
 
         for name, key, y in curves:
-            if len(y) == len(x) and np.any(y):
+            y_arr = np.asarray(y, dtype=float)
+            if len(y_arr) == len(x) and np.isfinite(y_arr).any():
                 color_hex = _decision_color_hex(key, decision_color_idx)
                 decision_color_idx += 1
                 pen = pg.mkPen(color_hex, width=2.4, style=_decision_line_style(key))
-                smooth_y = self._smooth_series(y)
+                smooth_y = self._smooth_series(y_arr)
                 curve = self.plot.plot(x, smooth_y, pen=pen, name=None)
                 self.curves[name] = curve
                 self.curve_data.append({
@@ -1142,6 +1153,14 @@ class VisualizationWidget(QWidget):
         self.data_manager = data_manager    # now available for decision plot
         # self.init_ui()
 
+        # Callbacks can fire while init_ui() wires view-range signals, so
+        # initialize interaction-throttling state before building widgets.
+        self._last_interaction_emit = {}
+        self._plot_hover_sessions = {
+            "cumulative": {"step": None, "started": None},
+            "components": {"step": None, "started": None},
+        }
+
         # Setup the main window properties
         self.setWindowTitle("Crafter Analysis Tool")
         self.setGeometry(100, 100, 1200, 800)
@@ -1176,11 +1195,6 @@ class VisualizationWidget(QWidget):
         self.hover_line = None
         self._hover_target_plot = None
         self.component_display_order = []
-        self._last_interaction_emit = {}
-        self._plot_hover_sessions = {
-            "cumulative": {"step": None, "started": None},
-            "components": {"step": None, "started": None},
-        }
 
     def _emit_interaction(self, event_type, payload, throttle_ms=None, throttle_key=None):
         key = throttle_key or event_type
