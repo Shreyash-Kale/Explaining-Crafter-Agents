@@ -310,7 +310,7 @@ The explainer auto-detects the algorithm from which columns exist
 - [vis/timeline.py](vis/timeline.py) — frame↔step mapping and timeline control
 - [vis/video_player.py](vis/video_player.py) — MP4 playback widget
 - [vis/explainer.py](vis/explainer.py) — deterministic natural-language step explanations
-- [vis/SemanticEventDetector.py](vis/SemanticEventDetector.py) — typed events from a trajectory
+- [vis/SemanticEventDetector.py](vis/SemanticEventDetector.py) — typed events from a trajectory (implemented standalone; not yet wired into the app)
 - [vis/study_logger.py](vis/study_logger.py) — structured user-study interaction logger
 - [vis/log_report.py](vis/log_report.py) — turn raw study logs into reports + analysis CSVs
 - [vis/config.py](vis/config.py) — default log/result paths, colors, study-log folders
@@ -331,9 +331,25 @@ The explainer auto-detects the algorithm from which columns exist
 - **[docs/PROJECT_GUIDE.md](docs/PROJECT_GUIDE.md)** — the main technical reference:
   architecture, training hyperparameters, KL balancing, data model, full command
   reference, troubleshooting, and FAQ. **Read this next.**
-- `docs/Markdown Files/` — supporting notes: `ARCHITECTURE_ANALYSIS.md`,
-  `LOG_ARCHITECTURE.md`, `TRAINING_AUDIT.md`, `NLP_Explainations.md`,
-  `TUTORIAL_SCRIPT.md`, `ADVISOR_PITCH.md`.
+
+`docs/deep-dives/` holds focused references for specific areas. Each is self-contained;
+read the one matching what you're working on:
+
+- **[PROJECT_OVERVIEW.md](docs/deep-dives/PROJECT_OVERVIEW.md)** — the 5-minute,
+  plain-language summary of what the platform is and why it exists. Start here if you
+  want the high-level picture before the code.
+- **[ARCHITECTURE_AND_ROADMAP.md](docs/deep-dives/ARCHITECTURE_AND_ROADMAP.md)** — how the
+  DreamerV2 implementation compares to the paper, the known limitations, and the planned
+  (mostly LLM-powered) future improvements.
+- **[DATA_AND_LOGGING.md](docs/deep-dives/DATA_AND_LOGGING.md)** — the authoritative
+  reference for every file the system writes: directory layout, CSV column schemas, and
+  the train → eval → visualize data flow.
+- **[EXPLANATION_SYSTEM.md](docs/deep-dives/EXPLANATION_SYSTEM.md)** — the natural-language
+  explanation layer: the research grounding (explanation-template theory) plus the
+  as-built `vis/explainer.py` API.
+- **[TRAINING_NOTES.md](docs/deep-dives/TRAINING_NOTES.md)** — the training audit: which
+  world-model bugs were fixed, the current hyperparameters and why they differ from the
+  paper, run history, and the success criteria for the next validation run.
 
 ---
 

@@ -20,8 +20,7 @@ crafter_env/
 .vscode/
 .claude/
 
-# Documentation (local only)
-Markdown Files/
+# Study session data (generated locally, not committed)
 study_logs/
 
 # Logs and outputs
